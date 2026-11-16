@@ -7,6 +7,12 @@ import * as sessions from './modules/auth/infrastructure/saved-session.ts';
 import * as preferences from './modules/polls/infrastructure/preferences.ts';
 import { startApp } from './presentation/app.ts';
 import { explainError } from './presentation/errors.ts';
+import { createPublishing } from './modules/publishing/index.ts';
+import {
+  createPublishingGateway,
+  preloadPublishing,
+} from './modules/publishing/infrastructure/gateway.ts';
+import { createDraftStore, newSendKey } from './modules/publishing/infrastructure/storage.ts';
 
 const authSession = createAuthSession({ createClient, auth, sessions });
 const results = createPollResults({
@@ -17,6 +23,12 @@ startApp({
   authSession,
   results,
   preferences,
+  publishing: createPublishing({
+    gateway: createPublishingGateway(() => authSession.getClient()),
+    store: createDraftStore(),
+    newKey: newSendKey,
+  }),
   explainError,
-  prepareLogin: () => Promise.all([preloadAuth(), preloadPolls()]).then(() => {}),
+  prepareLogin: () =>
+    Promise.all([preloadAuth(), preloadPolls(), preloadPublishing()]).then(() => {}),
 });

@@ -20,8 +20,37 @@ const fixture = await build({
     import { mountTestApp } from './test/fixtures/app.mjs';
     import { linkIdentity } from './src/modules/polls/application/links.ts';
     import { PasswordRequiredError } from './src/application/errors.ts';
+    import { createPublishing } from './src/modules/publishing/application/publishing.ts';
+    import { PublicationFailure } from './src/modules/publishing/application/contracts.ts';
+    import { createDraftStore, newSendKey } from './src/modules/publishing/infrastructure/storage.ts';
+    const copyStore = createDraftStore();
+    const copyWrite = copyStore.write;
+    copyStore.write = (draft, expected) => {
+      if (window.copySaveFailure && draft.items.length) throw new Error('Synthetic draft save failure.');
+      return copyWrite(draft, expected);
+    };
     window.requirePassword = () => window.qrTest.reject(new PasswordRequiredError());
     mountTestApp({
+      publishing: createPublishing({
+        store: copyStore, newKey: newSendKey,
+        gateway: {
+          accountId: async () => '7',
+          load: async links => ({ accountId: '7', polls: links.map((link, index) => ({
+            destination: {id: '-1000000000010', title: 'Source chat', url: 'https://t.me/sourcechat'},
+            content: { question: 'Copy question ' + (index + 1), answers: ['First', 'Second'],
+              settings: {anonymous: false, multiple: false, shuffle: true, allowRevoting: true, openAnswers: false, hideResults: false} },
+          })) }),
+          destinations: async () => [{id: '-1000000000020', title: 'Other chat', url: 'https://t.me/otherchat'}],
+          publish: async (destination, content, key) => {
+            window.sentCopies ??= [];
+            if (window.copyFailure && window.sentCopies.length === 1)
+              throw new PublicationFailure('Synthetic publication failure.', window.copyFailure,
+                {service:'Telegram',kind:'rpc',rpcCode:'CHAT_WRITE_FORBIDDEN',status:403});
+            window.sentCopies.push({destination, content, key});
+            return 'https://t.me/otherchat/' + (100 + window.sentCopies.length);
+          },
+        },
+      }),
       createClient: (id, hash) => ({
         async getApiCredentials() { return {id, hash}; },
         async exportSession() { return 'SYNTHETIC_SESSION_FOR_BROWSER_TEST'; },
@@ -62,6 +91,7 @@ const styles = new Map(
       'presentation/styles.css',
       'modules/auth/presentation/styles.css',
       'modules/polls/presentation/styles.css',
+      'modules/publishing/presentation/styles.css',
     ].map(async (path) => [path, await readFile(`src/${path}`, 'utf8')]),
   ),
 );
@@ -99,6 +129,7 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 let browser;
 const errors = [];
 let cases = 0;
+const publishingOnly = process.argv.includes('--publishing-only');
 async function checkLazyTelegram() {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -978,14 +1009,175 @@ async function checkGeneralPolls() {
   }
 }
 
+async function checkPublishing() {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 900 },
+    colorScheme: 'dark',
+  });
+  const page = await context.newPage();
+  page.on('pageerror', (error) => errors.push(error.message));
+  async function login() {
+    await page.locator('#connect').click();
+    await page.locator('#apiId').fill('12345');
+    await page.locator('#apiHash').fill('abcdef0123456789abcdef0123456789');
+    await page.locator('#phone').fill('+381123456789');
+    await page.locator('#loginSubmit').click();
+    await page.locator('#code').fill('12345');
+    await page.locator('#loginSubmit').click();
+    await page.locator('#login').waitFor({ state: 'hidden' });
+  }
+  try {
+    await page.goto(`${origin}/fixture/`);
+    await page.locator('#link0').fill('https://t.me/sourcechat/10');
+    await page.locator('#addPoll').click();
+    await page.locator('#addPoll').click();
+    await page.locator('#copyHeading').click();
+    await page.locator('#copySources input').nth(2).waitFor();
+    assert.equal(
+      await page.locator('#copySources input').nth(1).getAttribute('placeholder'),
+      'https://t.me/sourcechat/11',
+    );
+    await page.locator('#copyAddSource').click();
+    assert.equal(await page.locator('#copySources input').count(), 4);
+    await page.getByRole('button', { name: 'Remove source poll 4', exact: true }).click();
+    assert.equal(await page.locator('.poll-link').count(), 3);
+    await login();
+    await page.evaluate(() => {
+      window.copySaveFailure = true;
+    });
+    await page.locator('#copyLoad').click();
+    await page.waitForFunction(() =>
+      document.getElementById('copyStatus').textContent.includes('Synthetic draft save failure'),
+    );
+    assert.match(await page.locator('#copySaveHint').innerText(), /not saved/);
+    assert.equal(await page.locator('#copyPreview').isDisabled(), true);
+    await page.evaluate(() => {
+      window.copySaveFailure = false;
+    });
+    await page.locator('#copySave').click();
+    await page.waitForFunction(
+      () => document.getElementById('copySaveHint').textContent === 'Draft saved in this browser.',
+    );
+    await page.locator('.copy-item').nth(2).waitFor();
+    assert.equal(await page.locator('#copyDestination option:checked').innerText(), 'Source chat');
+    await page
+      .getByRole('textbox', { name: 'Copy 1 question', exact: true })
+      .fill('<script>alert(1)</script> Weekly question?');
+    await page.getByRole('button', { name: 'Add option to copy 1', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Copy 1 option 3', exact: true }).fill('Third');
+    await page.getByRole('button', { name: 'Move up option 3 in copy 1', exact: true }).click();
+    for (const [label, checked] of [
+      ['Anonymous voting', true],
+      ['Allow multiple answers', true],
+      ['Shuffle answer options', false],
+      ['Allow changing or retracting a vote', false],
+      ['Participants can add answer options', true],
+      ['Hide results until the poll closes', true],
+    ])
+      await page
+        .getByRole('checkbox', { name: `${label} in copy 1`, exact: true })
+        .setChecked(checked);
+    await page.locator('#copyChats').click();
+    await page.locator('#copyDestination').selectOption('-1000000000020');
+    await page.waitForFunction(
+      () => document.getElementById('copySaveHint').textContent === 'Draft saved in this browser.',
+    );
+    const saved = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem('telegram-poll-tools.draft.v1')),
+    );
+    assert.equal(saved.draft.items.length, 3);
+    assert.deepEqual(saved.draft.items[0].answers, ['First', 'Third', 'Second']);
+    assert.deepEqual(saved.draft.items[0].settings, {
+      anonymous: true,
+      multiple: true,
+      shuffle: false,
+      allowRevoting: false,
+      openAnswers: true,
+      hideResults: true,
+    });
+    await page.reload();
+    assert.equal(
+      await page.getByRole('textbox', { name: 'Copy 1 question', exact: true }).inputValue(),
+      '<script>alert(1)</script> Weekly question?',
+    );
+    assert.equal(await page.locator('#copyDestination').inputValue(), '-1000000000020');
+    assert.equal(await page.evaluate(() => window.sentCopies?.length ?? 0), 0);
+    assert.equal(await page.locator('#copyEditors script').count(), 0);
+    await setSettingsExpanded(page, true);
+    await page.locator('#link0').fill('https://t.me/sourcechat/99');
+    assert.equal(
+      await page.locator('#copySources input').first().inputValue(),
+      'https://t.me/sourcechat/10',
+    );
+    await login();
+    await page.evaluate(() => {
+      window.copyFailure = 'failed';
+    });
+    await page.locator('#copyPreview').click();
+    assert.equal(await page.locator('#publishPreview').isVisible(), true);
+    assert.match(await page.locator('#publishSummary').innerText(), /Other chat/);
+    await page.locator('#publishConfirm').click();
+    await page.waitForFunction(() =>
+      document.getElementById('copyStatus').textContent.includes('Synthetic publication failure'),
+    );
+    assert.equal(await page.evaluate(() => window.sentCopies.length), 1);
+    assert.equal(
+      await page.getByRole('textbox', { name: 'Copy 1 question', exact: true }).isDisabled(),
+      true,
+    );
+    await page.evaluate(() => {
+      window.copyFailure = null;
+    });
+    await page.locator('#copyPreview').click();
+    assert.equal(await page.locator('#publishConfirm').innerText(), 'Publish 2 polls');
+    await page.locator('#publishConfirm').click();
+    await page.waitForFunction(
+      () => document.getElementById('copyStatus').textContent === 'All ready polls were published.',
+    );
+    const sent = await page.evaluate(() => window.sentCopies);
+    assert.equal(sent.length, 3);
+    assert.equal(new Set(sent.map((item) => item.key)).size, 3);
+    assert.ok(sent.every((item) => item.destination.id === '-1000000000020'));
+    assert.deepEqual(sent[0].content.settings, saved.draft.items[0].settings);
+    assert.equal(await page.locator('#copyPreview').isDisabled(), true);
+    assert.equal(await page.locator('a').filter({ hasText: 'Open new poll' }).count(), 3);
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await page.screenshot({ path: 'test-output/publishing-dark.png', fullPage: true });
+    await page.reload();
+    assert.equal(await page.locator('#copyPreview').isDisabled(), true);
+    assert.equal(await page.evaluate(() => window.sentCopies?.length ?? 0), 0);
+    await page.evaluate(() => {
+      const value = JSON.parse(localStorage.getItem('telegram-poll-tools.draft.v1'));
+      value.draft.items[0].delivery = { state: 'sending' };
+      localStorage.setItem('telegram-poll-tools.draft.v1', JSON.stringify(value));
+    });
+    await page.reload();
+    assert.match(await page.locator('.copy-receipt').first().innerText(), /interrupted/);
+    await page.getByRole('button', { name: 'I found this poll in Telegram', exact: true }).click();
+    await page.waitForFunction(
+      () => document.getElementById('copyStatus').textContent === 'Sending check recorded.',
+    );
+    assert.equal(await page.evaluate(() => window.sentCopies?.length ?? 0), 0);
+    cases++;
+  } finally {
+    await context.close();
+  }
+}
+
 try {
   browser = await chromium.launch({
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
     headless: true,
   });
-  await checkLazyTelegram();
-  await checkGeneralPolls();
-  for (const width of [320, 390, 1280])
+  if (!publishingOnly) {
+    await checkLazyTelegram();
+    await checkGeneralPolls();
+  }
+  await checkPublishing();
+  for (const width of publishingOnly ? [] : [320, 390, 1280])
     for (const colorScheme of ['light', 'dark']) {
       const timeZone = colorScheme === 'light' ? 'UTC' : 'Europe/Belgrade';
       const context = await browser.newContext({
@@ -1180,7 +1372,9 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    `Browser: ${cases} viewport/theme cases passed; load button placement, settings and result disclosures, lazy SDK loading, load failure recovery, cancellation, demo, CSV downloads, vote tooltips, time zones, keyboard/touch/hover, QR, 2FA, loading after encrypted reload and CSP verified.`,
+    publishingOnly
+      ? 'Browser: poll-copy editing, save failure recovery, reload, settings, batch publication, safe retry and interrupted sending verified.'
+      : `Browser: ${cases} scenario/viewport cases passed; poll-copy editing, persistence and publication; load button placement, disclosures, lazy SDK loading, failure recovery, cancellation, demo, CSV, tooltips, time zones, keyboard/touch/hover, QR, 2FA, encrypted reload and CSP verified.`,
   );
 } finally {
   await browser?.close();

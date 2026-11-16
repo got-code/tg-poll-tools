@@ -34,6 +34,7 @@ export function createPollController({
   const saved = preferences.readPreferences();
   let busy = false;
   let result: PollResult | null = null;
+  let loadedLinks: string[] = [];
   let visible: PollGroup[] = [];
   let preferencesAvailable = true;
   const controls = createViewControls(saved, () => {
@@ -138,16 +139,15 @@ export function createPollController({
     if (result?.kind === 'live')
       $('resultMeta').textContent = `Loading… Previous results: ${loadedTime(result)}`;
     try {
-      showData(
-        await results.load(links, (event) =>
-          status(
-            event.kind === 'loading'
-              ? `Poll ${event.index} of ${event.total}: loading votes…`
-              : 'Checking result completeness…',
-          ),
+      const value = await results.load(links, (event) =>
+        status(
+          event.kind === 'loading'
+            ? `Poll ${event.index} of ${event.total}: loading votes…`
+            : 'Checking result completeness…',
         ),
-        liveSettings,
       );
+      loadedLinks = links.map((link) => link.url);
+      showData(value, liveSettings);
       status(
         `Done. ${result!.polls.length} ${result!.polls.length === 1 ? 'poll' : 'polls'} loaded.`,
       );
@@ -189,6 +189,7 @@ export function createPollController({
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   });
   return {
+    sourceLinks: () => (result?.kind === 'live' ? [...loadedLinks] : form.values()),
     clear(hasSavedLogin: boolean) {
       result = null;
       visible = [];

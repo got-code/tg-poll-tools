@@ -8,11 +8,12 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss://pluto.web.telegram.org wss://venus.web.telegram.org wss://aurora.web.telegram.org wss://vesta.web.telegram.org wss://flora.web.telegram.org; img-src 'self' data:; base-uri 'none'; form-action 'none'; object-src 'none'"
     />
-    <title>Poll Intersections</title>
+    <title>Telegram Poll Tools</title>
     <link rel="icon" type="image/svg+xml" sizes="any" href="/presentation/favicon.svg?no-inline" />
     <link rel="stylesheet" href="/presentation/styles.css" />
     <link rel="stylesheet" href="/modules/auth/presentation/styles.css" />
     <link rel="stylesheet" href="/modules/polls/presentation/styles.css" />
+    <link rel="stylesheet" href="/modules/publishing/presentation/styles.css" />
   </head>
   <body>
     <div class="wrap">
@@ -20,8 +21,8 @@
         <div class="brand">
           <span class="mark" aria-hidden="true"></span>
           <div class="brand-copy">
-            <h1>Find intersections across Telegram polls.</h1>
-            <p>Explore participant overlaps across poll answers.</p>
+            <h1>Telegram Poll Tools</h1>
+            <p>Compare participant choices and prepare new copies of polls.</p>
           </div>
         </div>
         <div class="topright">
@@ -145,6 +146,30 @@
             >
           </div>
         </section>
+        <section class="panel copy-panel" id="copySection" aria-labelledby="copyHeading">
+          <details id="copyDetails">
+            <summary id="copyHeading">Copy and publish polls</summary>
+            <p>Choose source polls, edit their copies and publish them in one chat.</p>
+            <form id="copyForm">
+              <div id="copySources"></div>
+              <div class="actions">
+                <button id="copyAddSource" type="button">Add source poll</button>
+                <button id="copyUseAnalysis" type="button">Use analysis links</button>
+                <button id="copyLoad" type="submit">Load source polls</button>
+              </div>
+            </form>
+            <div id="copyEditors"></div>
+            <label>Destination for all copies<select id="copyDestination"></select></label>
+            <div class="actions">
+              <button id="copyChats" type="button">Choose another chat</button>
+              <button id="copyPreview" type="button" class="primary">Review and publish</button>
+              <button id="copySave" type="button">Save draft</button>
+              <button id="copyReset" type="button" class="text">New draft</button>
+            </div>
+            <p id="copySaveHint" class="field-hint">Drafts are saved only in this browser.</p>
+            <p id="copyStatus" class="status" role="status" aria-live="polite"></p>
+          </details>
+        </section>
         <section class="results" aria-labelledby="resultHeading">
           <div class="resulthead">
             <div>
@@ -183,7 +208,8 @@
           <summary>Privacy</summary>
           <p>
             The app connects directly to Telegram. No application backend or analytics. It never
-            votes or sends messages; it may read your chat list to resolve private group links.
+            votes. It sends new polls only after you review and confirm publication, and may read
+            your chat list to resolve links or choose a destination.
           </p>
           <p>
             “Remember login” encrypts your session and API keys with a separate password in this
@@ -192,9 +218,23 @@
             sessions in Telegram → Settings → Devices. The session has full account permissions.
             Encryption protects the stored copy, not an unlocked page or compromised device.
           </p>
+          <p>
+            Draft questions, options, settings, source links, account and destination references,
+            and publication results are saved locally without encryption. Voter lists remain in
+            memory.
+          </p>
         </details>
       </footer>
     </div>
+    <dialog id="publishPreview" aria-labelledby="publishHeading">
+      <h2 id="publishHeading">Review new polls</h2>
+      <p>These will be new polls. The source polls and their votes will not change.</p>
+      <div id="publishSummary"></div>
+      <div class="actions">
+        <button id="publishConfirm" type="button" class="primary">Publish polls</button>
+        <button id="publishCancel" type="button">Back to editing</button>
+      </div>
+    </dialog>
     <dialog id="login" aria-labelledby="loginHeading" aria-describedby="loginHint">
       <h2 id="loginHeading">Sign in to Telegram</h2>
       <p class="muted" id="loginHint">Choose how to sign in.</p>
