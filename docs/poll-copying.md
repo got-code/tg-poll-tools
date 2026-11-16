@@ -11,7 +11,11 @@ Pages address: `https://got-code.github.io/tg-poll-tools/`.
   the existing add, remove and message-number increment behavior.
 - Each poll selected in that list produces one independently editable new poll.
   Changing the analysis selection must not replace an existing draft.
-  Reloading a changed source list preserves edits to unchanged sources.
+  Each card contains its source link and editable copy; adding/removing affects
+  the whole card. Blank sources auto-increment from the previous message.
+  Fill drafts from sources refills every card and confirms replacing existing
+  questions/answers/settings. Changing a source preserves text until this action
+  and blocks publication until the matching source has been loaded.
 - Copying reads poll content and settings without loading voters. Both anonymous
   and non-anonymous ordinary polls are eligible when the account can read them.
 - Users can edit the question and add, remove, reorder or edit answers.
@@ -60,3 +64,11 @@ Pages address: `https://got-code.github.io/tg-poll-tools/`.
 
 Delivery sequence: name update; content-only loading and draft model; editor and
 storage; destination and publication; integration checks and user-reviewed release.
+
+## Draft lifecycle
+
+Delete draft requires confirmation and removes the browser draft, never Telegram
+polls. Reopening creates a fresh draft from the current comparison selection.
+On page load, only drafts with unsent polls (including failed/unknown outcomes)
+open automatically. Empty and fully published drafts start collapsed. Users
+control expansion thereafter; deletion or full publication collapses the block.

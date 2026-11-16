@@ -22,7 +22,7 @@
           <span class="mark" aria-hidden="true"></span>
           <div class="brand-copy">
             <h1>Telegram Poll Tools</h1>
-            <p>Compare participant choices and prepare new copies of polls.</p>
+            <p>Compare poll responses and publish edited copies.</p>
           </div>
         </div>
         <div class="topright">
@@ -146,30 +146,6 @@
             >
           </div>
         </section>
-        <section class="panel copy-panel" id="copySection" aria-labelledby="copyHeading">
-          <details id="copyDetails">
-            <summary id="copyHeading">Copy and publish polls</summary>
-            <p>Choose source polls, edit their copies and publish them in one chat.</p>
-            <form id="copyForm">
-              <div id="copySources"></div>
-              <div class="actions">
-                <button id="copyAddSource" type="button">Add source poll</button>
-                <button id="copyUseAnalysis" type="button">Use analysis links</button>
-                <button id="copyLoad" type="submit">Load source polls</button>
-              </div>
-            </form>
-            <div id="copyEditors"></div>
-            <label>Destination for all copies<select id="copyDestination"></select></label>
-            <div class="actions">
-              <button id="copyChats" type="button">Choose another chat</button>
-              <button id="copyPreview" type="button" class="primary">Review and publish</button>
-              <button id="copySave" type="button">Save draft</button>
-              <button id="copyReset" type="button" class="text">New draft</button>
-            </div>
-            <p id="copySaveHint" class="field-hint">Drafts are saved only in this browser.</p>
-            <p id="copyStatus" class="status" role="status" aria-live="polite"></p>
-          </details>
-        </section>
         <section class="results" aria-labelledby="resultHeading">
           <div class="resulthead">
             <div>
@@ -201,6 +177,33 @@
           Includes anyone who voted in at least one poll. An unanswered poll counts as an implicit
           vote for all its options. An intersection is implicit if either answer is assumed.
         </p>
+        <section class="panel copy-panel" id="copySection" aria-labelledby="copyHeading">
+          <details id="copyDetails">
+            <summary id="copyHeading">Copy and publish polls</summary>
+            <p>Choose source polls, edit their copies and publish them in one chat.</p>
+            <form id="copyForm">
+              <div class="actions">
+                <button id="copyUseAnalysis" type="button">
+                  Use polls selected for comparison
+                </button>
+                <button id="copyLoad" type="submit">Fill drafts from sources</button>
+              </div>
+              <div id="copyEditors"></div>
+              <div class="actions">
+                <button id="copyAddSource" type="button">Add poll</button>
+              </div>
+            </form>
+            <label>Destination for all copies<select id="copyDestination"></select></label>
+            <div class="actions">
+              <button id="copyChats" type="button">Choose another chat</button>
+              <button id="copyPreview" type="button" class="primary">Review and publish</button>
+              <button id="copySave" type="button" hidden>Retry saving</button>
+              <button id="copyReset" type="button" class="text">Delete draft</button>
+            </div>
+            <p id="copySaveHint" class="field-hint">Drafts are saved only in this browser.</p>
+            <p id="copyStatus" class="status" role="status" aria-live="polite"></p>
+          </details>
+        </section>
       </main>
       <footer>
         Votes are processed on your device.

@@ -25,6 +25,7 @@ export interface DraftStore {
   // Called only inside exclusive(). Reject stale revisions rather than overwriting another tab.
   // undefined means an explicit user-requested replacement, including corrupt saved data.
   write(draft: PollDraft, expectedRevision: string | null | undefined): string;
+  remove(expectedRevision: string | null | undefined): void;
   exclusive<T>(action: () => T | Promise<T>): Promise<T>;
 }
 

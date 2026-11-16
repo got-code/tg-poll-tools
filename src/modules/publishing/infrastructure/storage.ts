@@ -36,6 +36,18 @@ export function createDraftStore(): DraftStore {
       }
       return revision;
     },
+    remove(expectedRevision) {
+      if (expectedRevision !== undefined && (read()?.revision ?? null) !== expectedRevision)
+        throw new UserFacingError('The draft changed in another tab. Reload before deleting it.');
+      try {
+        localStorage.removeItem(DRAFT_KEY);
+        if (localStorage.getItem(DRAFT_KEY) !== null) throw new Error('Deletion did not persist');
+      } catch {
+        throw new UserFacingError(
+          'The draft could not be deleted. Check browser storage and retry.',
+        );
+      }
+    },
     async exclusive(action) {
       if (!navigator.locks)
         throw new UserFacingError(

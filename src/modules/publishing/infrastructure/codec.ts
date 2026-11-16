@@ -50,7 +50,6 @@ export function readStoredDraft(value: unknown): StoredDraft {
     const data = value.draft;
     if (
       !strings(data.sources) ||
-      !data.sources.length ||
       !Array.isArray(data.items) ||
       !(
         data.accountId === null ||
@@ -71,7 +70,9 @@ export function readStoredDraft(value: unknown): StoredDraft {
         !record(item.settings)
       )
         throw new Error('Invalid poll');
-      parseLink(item.source);
+      if (item.source) parseLink(item.source);
+      else if (readDelivery(item.delivery).state !== 'ready')
+        throw new Error('Unfilled poll has delivery state');
       keys.add(item.sendKey);
       const settings = {} as PollSettings;
       for (const key of SETTING_KEYS) {
@@ -93,7 +94,7 @@ export function readStoredDraft(value: unknown): StoredDraft {
       destination: data.destination === null ? null : readDestination(data.destination),
       items,
     };
-    if (items.length && !draft.accountId) throw new Error('Invalid draft');
+    if (items.some((item) => item.source) && !draft.accountId) throw new Error('Invalid draft');
     return { revision: value.revision, draft };
   } catch {
     throw new UserFacingError('The saved draft cannot be read. Start a new draft to replace it.');

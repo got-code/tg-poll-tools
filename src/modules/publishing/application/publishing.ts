@@ -1,5 +1,5 @@
 import { UserFacingError } from '../../../application/errors.ts';
-import { readPollLinks, linkIdentity } from '../../polls/index.ts';
+import { readPollLinks, linkIdentity, resolveLinkValues } from '../../polls/index.ts';
 import { requireEditable, validateContent, isEditable } from '../domain/drafts.ts';
 import { PublicationFailure } from './contracts.ts';
 import type { DraftStore, PublishingGateway } from './contracts.ts';
@@ -21,6 +21,28 @@ export function createPublishing({
   let savedContent: string | null = null;
   let writeFailed = false;
 
+  function blankItem(): DraftItem {
+    return {
+      source: '',
+      sendKey: newKey(),
+      question: '',
+      answers: ['', ''],
+      settings: {
+        anonymous: false,
+        multiple: false,
+        shuffle: false,
+        allowRevoting: true,
+        openAnswers: false,
+        hideResults: false,
+      },
+      delivery: { state: 'ready' },
+    };
+  }
+  function requireSourceEditing() {
+    requireIdle();
+    if (requireDraft().items.some((item) => !isEditable(item)))
+      throw new UserFacingError('Start a new draft to change sources after sending has begun.');
+  }
   function requireDraft() {
     if (!draft) throw new UserFacingError('Load source polls to create a draft.');
     return draft;
@@ -48,10 +70,13 @@ export function createPublishing({
       links.length !== current.items.length ||
       links.some(
         (link, index) =>
+          !current.items[index].source ||
           linkIdentity(link) !== linkIdentity(readPollLinks([current.items[index].source])[0]),
       )
     )
-      throw new UserFacingError('Source links changed. Load source polls again before publishing.');
+      throw new UserFacingError(
+        'Source links changed. Fill drafts from sources before publishing.',
+      );
     if (!current.destination || !current.accountId)
       throw new UserFacingError('Choose a destination.');
     if (!pendingItems().length)
@@ -78,7 +103,22 @@ export function createPublishing({
       const saved = store.read();
       revision = saved?.revision ?? null;
       draft = saved?.draft ?? null;
-      savedContent = draft === null ? null : JSON.stringify(draft);
+      savedContent = saved === null ? null : JSON.stringify(saved.draft);
+      // Older drafts could have source rows without corresponding copies.
+      if (draft && draft.sources.length !== draft.items.length) {
+        const loaded = new Map(
+          draft.items.filter((item) => item.source).map((item) => [item.source, item]),
+        );
+        const used = new Set<string>();
+        draft.items = resolveLinkValues(draft.sources).map((source) => {
+          const item = loaded.get(source);
+          if (item && !used.has(item.sendKey)) {
+            used.add(item.sendKey);
+            return item;
+          }
+          return blankItem();
+        });
+      }
       writeFailed = false;
       for (const item of draft?.items ?? [])
         if (item.delivery.state === 'sending')
@@ -91,41 +131,68 @@ export function createPublishing({
     start(sources: readonly string[]) {
       requireIdle();
       if (draft)
-        throw new UserFacingError('A draft already exists. Reset it explicitly to start again.');
+        throw new UserFacingError('A draft already exists. Delete it explicitly to start again.');
       draft = {
         sources: sources.length ? [...sources] : [''],
-        items: [],
+        items: (sources.length ? sources : ['']).map(() => blankItem()),
         destination: null,
         accountId: null,
       };
       return structuredClone(draft);
     },
-    async reset(sources: readonly string[]) {
+    async deleteDraft({ unreadable = false } = {}) {
       requireIdle();
-      await saves;
-      await store.exclusive(() => {
-        const next: PollDraft = {
-          sources: sources.length ? [...sources] : [''],
-          items: [],
-          destination: null,
-          accountId: null,
-        };
-        try {
-          revision = store.write(next, undefined);
-        } catch (error) {
-          writeFailed = true;
-          throw error;
-        }
-        draft = next;
-        savedContent = JSON.stringify(next);
-        writeFailed = false;
-      });
+      busy = true;
+      try {
+        await saves;
+        await store.exclusive(() => {
+          store.remove(unreadable ? undefined : revision);
+          draft = null;
+          revision = null;
+          savedContent = null;
+          writeFailed = false;
+        });
+      } finally {
+        busy = false;
+      }
     },
     setSources(sources: readonly string[]) {
-      requireIdle();
-      if (requireDraft().items.some((item) => !isEditable(item)))
-        throw new UserFacingError('Start a new draft to change sources after sending has begun.');
-      requireDraft().sources = sources.length ? [...sources] : [''];
+      requireSourceEditing();
+      const current = requireDraft();
+      const existing = new Map(
+        resolveLinkValues(current.sources).map((source, index) => [source, current.items[index]]),
+      );
+      const next = sources.length ? [...sources] : [''];
+      const used = new Set<string>();
+      current.items = resolveLinkValues(next).map((source, index) => {
+        const item = existing.get(source) ?? current.items[index];
+        if (item && !used.has(item.sendKey)) {
+          used.add(item.sendKey);
+          return item;
+        }
+        return blankItem();
+      });
+      current.sources = next;
+    },
+    setSource(index: number, source: string) {
+      requireSourceEditing();
+      const current = requireDraft();
+      if (!current.items[index]) throw new UserFacingError('This draft item no longer exists.');
+      current.sources[index] = source;
+    },
+    add() {
+      requireSourceEditing();
+      requireDraft().sources.push('');
+      requireDraft().items.push(blankItem());
+    },
+    remove(index: number) {
+      requireSourceEditing();
+      const current = requireDraft();
+      if (!current.items[index]) throw new UserFacingError('This draft item no longer exists.');
+      // Resolve implicit links before removal to keep surviving cards bound to their sources.
+      current.sources = resolveLinkValues(current.sources);
+      current.sources.splice(index, 1);
+      current.items.splice(index, 1);
     },
     edit(index: number, content: PollContent) {
       requireIdle();
@@ -148,7 +215,7 @@ export function createPublishing({
     save,
     validate,
     destinations: () => gateway.destinations(),
-    async load() {
+    async load({ replace = false } = {}) {
       requireIdle();
       const current = requireDraft();
       if (current.items.some((item) => !isEditable(item)))
@@ -166,7 +233,9 @@ export function createPublishing({
           throw new UserFacingError('Telegram did not return all requested source polls.');
         const existing = new Map(
           current.accountId === loaded.accountId
-            ? current.items.map((item) => [linkIdentity(readPollLinks([item.source])[0]), item])
+            ? current.items
+                .filter((item) => item.source)
+                .map((item) => [linkIdentity(readPollLinks([item.source])[0]), item])
             : [],
         );
         draft = {
@@ -178,7 +247,7 @@ export function createPublishing({
               : loaded.polls[0].destination,
           items: loaded.polls.map(
             ({ content }, index): DraftItem =>
-              existing.get(linkIdentity(links[index])) ?? {
+              (!replace && existing.get(linkIdentity(links[index]))) || {
                 ...structuredClone(content),
                 source: links[index].url,
                 sendKey: newKey(),

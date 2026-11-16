@@ -31,7 +31,6 @@ export function createPublishingController({
   const $ = elements<{
     copyDetails: HTMLDetailsElement;
     copyForm: HTMLFormElement;
-    copySources: HTMLDivElement;
     copyAddSource: HTMLButtonElement;
     copyUseAnalysis: HTMLButtonElement;
     copyLoad: HTMLButtonElement;
@@ -52,9 +51,12 @@ export function createPublishingController({
   let busy = false;
   let saving = false;
   let saveVersion = 0;
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let restoreFailed = false;
   let sourceInputs: HTMLInputElement[] = [];
+  let sourceHintUpdates: (() => void)[] = [];
   const destinations = new Map<string, Destination>();
+  const expandedCopies = new Map<string, boolean>();
 
   function report(error: unknown) {
     status(explainError(error), true);
@@ -68,20 +70,27 @@ export function createPublishingController({
     for (const input of sourceInputs) input.disabled = busy || locked;
     $('copyAddSource').disabled = busy || locked || !draft;
     $('copyUseAnalysis').disabled = busy || locked || !draft;
-    $('copyLoad').disabled = busy || locked || !draft;
-    $('copyReset').disabled = busy;
-    $('copySave').disabled = busy || !draft;
-    $('copyDestination').disabled = busy || locked || !draft?.items.length;
-    $('copyChats').disabled = busy || locked || !draft?.items.length;
+    $('copyLoad').disabled = busy || locked || !draft?.items.length;
+    $('copyReset').disabled = busy || (!draft && !restoreFailed);
+    $('copySave').hidden = !draft || saving || publishing.isSaved();
+    $('copySave').disabled = busy;
+    $('copyDestination').disabled = busy || locked || !draft?.accountId;
+    $('copyChats').disabled = busy || locked || !draft?.accountId;
     $('copyPreview').disabled =
-      busy || saving || !publishing.isSaved() || !draft?.items.some(isEditable);
+      busy ||
+      saving ||
+      !publishing.isSaved() ||
+      !draft?.items.some((item) => item.source && isEditable(item));
+    if (!draft) $('copySaveHint').textContent = 'Drafts are saved only in this browser.';
     if (draft && !saving)
       $('copySaveHint').textContent = publishing.isSaved()
         ? 'Draft saved in this browser.'
         : 'Changes are not saved. Retry saving before publishing.';
-    $('copyLoad').textContent = busy ? 'Working…' : 'Load source polls';
+    $('copyLoad').textContent = busy ? 'Working…' : 'Fill drafts from sources';
   }
   function save() {
+    clearTimeout(saveTimer);
+    saveTimer = undefined;
     const version = ++saveVersion;
     saving = true;
     $('copySaveHint').textContent = 'Saving draft…';
@@ -109,7 +118,11 @@ export function createPublishingController({
       if (busy) return;
       action();
       if (redraw) render();
-      void save();
+      clearTimeout(saveTimer);
+      saving = true;
+      $('copySaveHint').textContent = 'Saving draft…';
+      renderState();
+      saveTimer = setTimeout(() => void save(), 300);
     } catch (error) {
       report(error);
     }
@@ -120,6 +133,7 @@ export function createPublishingController({
     onBusyChange(true);
     render();
     try {
+      if (saveTimer !== undefined) await save();
       await action();
     } catch (error) {
       report(error);
@@ -133,59 +147,6 @@ export function createPublishingController({
     if (!isConnected()) openLogin(action);
     else void action();
   }
-  function renderSources() {
-    const values = state()?.sources ?? [];
-    const resolved = resolveLinkValues(values);
-    sourceInputs = [];
-    $('copySources').replaceChildren();
-    values.forEach((value, index) => {
-      const row = element('div', 'copy-source');
-      const label = element('label', '', `Source poll ${index + 1}`);
-      const input = element('input');
-      input.type = 'url';
-      input.value = value;
-      input.autocomplete = 'off';
-      input.spellcheck = false;
-      input.required = index === 0;
-      input.setAttribute('aria-label', `Source poll ${index + 1} link`);
-      input.placeholder = resolved[index] || 'https://t.me/group/123';
-      label.append(input);
-      const hint = element(
-        'span',
-        'field-hint',
-        index && !value.trim() && resolved[index]
-          ? `Automatic · ${resolved[index]}`
-          : 'Paste a poll link. Blank rows use the next message.',
-      );
-      input.addEventListener('input', () =>
-        change(() => {
-          const next = sourceInputs.map((field) => field.value);
-          publishing.setSources(next);
-          const suggestions = resolveLinkValues(next);
-          sourceInputs.forEach((field, position) => {
-            field.placeholder = suggestions[position] || 'https://t.me/group/123';
-          });
-          hint.textContent =
-            index && !input.value.trim()
-              ? 'Automatic · next message after the previous source.'
-              : 'Source changed; load source polls to update copies.';
-        }),
-      );
-      const remove = element('button', 'text', 'Remove');
-      remove.type = 'button';
-      remove.setAttribute('aria-label', `Remove source poll ${index + 1}`);
-      remove.disabled = busy || (state()?.items.some((item) => !isEditable(item)) ?? false);
-      remove.addEventListener('click', () =>
-        change(() => {
-          const next = state()!.sources.filter((_, position) => position !== index);
-          publishing.setSources(next.length ? next : ['']);
-        }, true),
-      );
-      row.append(label, remove, hint);
-      $('copySources').append(row);
-      sourceInputs.push(input);
-    });
-  }
   function renderDestination() {
     const current = state()?.destination;
     if (current) destinations.set(current.id, current);
@@ -194,7 +155,7 @@ export function createPublishingController({
       const option = element(
         'option',
         '',
-        state()?.items.length ? 'Choose a destination chat' : 'Load source polls first',
+        state()?.accountId ? 'Choose a destination chat' : 'Fill drafts from sources first',
       );
       option.value = '';
       $('copyDestination').append(option);
@@ -215,102 +176,106 @@ export function createPublishingController({
   }
   function renderEditors() {
     $('copyEditors').replaceChildren();
+    sourceInputs = [];
+    sourceHintUpdates = [];
+    const sources = state()?.sources ?? [];
+    const resolved = resolveLinkValues(sources);
+    const sourceLocked = state()?.items.some((item) => !isEditable(item)) ?? false;
     state()?.items.forEach((item, index) => {
+      const card = element('details', 'copy-card');
+      card.open = expandedCopies.get(item.sendKey) ?? index === 0;
+      const heading = element('summary');
+      const title = element(
+        'span',
+        'copy-title',
+        `Copy ${index + 1} · ${item.question || 'Untitled poll'}`,
+      );
+      heading.append(title);
+      card.append(heading);
+      card.addEventListener('toggle', () => {
+        if (card.isConnected) expandedCopies.set(item.sendKey, card.open);
+      });
+      const sourceRow = element('div', 'copy-source');
+      const sourceLabel = element('label', '', 'Source poll link');
+      const sourceInput = element('input');
+      sourceInput.type = 'url';
+      sourceInput.value = sources[index];
+      sourceInput.placeholder = resolved[index] || 'https://t.me/group/123';
+      sourceInput.autocomplete = 'off';
+      sourceInput.spellcheck = false;
+      sourceInput.required = index === 0;
+      sourceInput.setAttribute('aria-label', `Source poll ${index + 1} link`);
+      sourceInput.disabled = busy || sourceLocked;
+      sourceInputs.push(sourceInput);
+      sourceLabel.append(sourceInput);
+      const hint = element('span', 'field-hint');
+      const updateHint = () => {
+        const current = state()!;
+        const links = resolveLinkValues(current.sources);
+        hint.textContent = !item.source
+          ? 'Fill drafts from sources to load this poll.'
+          : links[index] !== item.source
+            ? 'Source changed. Fill drafts from sources to update this copy.'
+            : 'This copy was filled from this source.';
+        if (!current.sources[index].trim() && links[index])
+          hint.textContent += ` Automatic · ${links[index]}`;
+      };
+      updateHint();
+      sourceHintUpdates.push(updateHint);
+      sourceInput.addEventListener('input', () =>
+        change(() => {
+          publishing.setSource(index, sourceInput.value);
+          const links = resolveLinkValues(state()!.sources);
+          sourceInputs.forEach((input, position) => {
+            input.placeholder = links[position] || 'https://t.me/group/123';
+          });
+          sourceHintUpdates.forEach((update) => update());
+        }),
+      );
+      const remove = element('button', 'text', 'Remove poll');
+      remove.type = 'button';
+      remove.disabled = busy || sourceLocked;
+      remove.setAttribute('aria-label', `Remove poll ${index + 1}`);
+      remove.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        change(() => publishing.remove(index), true);
+      });
+      heading.append(remove);
+      sourceRow.append(sourceLabel, hint);
+      card.append(sourceRow);
       const panel = element('fieldset', 'copy-item');
       panel.disabled = busy || !isEditable(item);
-      panel.append(element('legend', '', `Copy ${index + 1}`));
-      const source = element('a', 'small', 'Source poll');
-      source.href = item.source;
-      source.target = '_blank';
-      source.rel = 'noopener noreferrer';
-      panel.append(source);
+      panel.setAttribute('aria-label', `Copy ${index + 1}`);
       const questionLabel = element('label', '', 'Question');
       const question = element('textarea');
       question.value = item.question;
-      question.required = true;
       question.rows = 2;
       question.setAttribute('aria-label', `Copy ${index + 1} question`);
       question.addEventListener('input', () =>
         edit(index, (content) => {
           content.question = question.value;
+          title.textContent = `Copy ${index + 1} · ${question.value || 'Untitled poll'}`;
         }),
       );
       questionLabel.append(question);
       panel.append(questionLabel);
-      const answers = element('div', 'copy-answers');
-      item.answers.forEach((text, answerIndex) => {
-        const row = element('div', 'copy-answer');
-        const label = element('label', '', `Option ${answerIndex + 1}`);
-        const input = element('input');
-        input.value = text;
-        input.required = true;
-        input.setAttribute('aria-label', `Copy ${index + 1} option ${answerIndex + 1}`);
-        input.addEventListener('input', () =>
-          edit(index, (content) => {
-            content.answers[answerIndex] = input.value;
-          }),
-        );
-        label.append(input);
-        row.append(label);
-        for (const [labelText, offset] of [
-          ['Move up', -1],
-          ['Move down', 1],
-        ] as const) {
-          const button = element('button', 'text', offset < 0 ? '↑' : '↓');
-          button.type = 'button';
-          button.setAttribute(
-            'aria-label',
-            `${labelText} option ${answerIndex + 1} in copy ${index + 1}`,
-          );
-          button.disabled = answerIndex + offset < 0 || answerIndex + offset >= item.answers.length;
-          button.addEventListener('click', () =>
-            edit(
-              index,
-              (content) => {
-                const other = answerIndex + offset;
-                [content.answers[answerIndex], content.answers[other]] = [
-                  content.answers[other],
-                  content.answers[answerIndex],
-                ];
-              },
-              true,
-            ),
-          );
-          row.append(button);
-        }
-        const remove = element('button', 'text', 'Remove');
-        remove.type = 'button';
-        remove.setAttribute(
-          'aria-label',
-          `Remove option ${answerIndex + 1} from copy ${index + 1}`,
-        );
-        remove.disabled = item.answers.length <= 2;
-        remove.addEventListener('click', () =>
-          edit(
-            index,
-            (content) => {
-              content.answers.splice(answerIndex, 1);
-            },
-            true,
-          ),
-        );
-        row.append(remove);
-        answers.append(row);
-      });
-      panel.append(answers);
-      const add = element('button', 'text', 'Add option');
-      add.type = 'button';
-      add.setAttribute('aria-label', `Add option to copy ${index + 1}`);
-      add.addEventListener('click', () =>
-        edit(
-          index,
-          (content) => {
-            content.answers.push('');
-          },
-          true,
-        ),
+      const answersLabel = element('label', '', 'Answer options');
+      const answers = element('textarea');
+      answers.value = item.answers.join('\n');
+      answers.rows = Math.max(4, Math.min(item.answers.length, 10));
+      answers.placeholder = 'First option\nSecond option\nThird option';
+      answers.setAttribute('aria-label', `Copy ${index + 1} answer options`);
+      const answersHint = element('span', 'field-hint', 'One option per line.');
+      answersHint.id = `copyAnswersHint${index}`;
+      answers.setAttribute('aria-describedby', answersHint.id);
+      answers.addEventListener('input', () =>
+        edit(index, (content) => {
+          content.answers = answers.value.split('\n');
+        }),
       );
-      panel.append(add);
+      answersLabel.append(answers, answersHint);
+      panel.append(answersLabel);
       const settings = element('div', 'copy-settings');
       for (const [key, text] of SETTINGS) {
         const label = element('label', 'check');
@@ -366,16 +331,26 @@ export function createPublishingController({
           }
         }
       }
-      $('copyEditors').append(panel, receipt);
+      card.append(panel, receipt);
+      $('copyEditors').append(card);
     });
   }
   function render() {
-    renderSources();
     renderDestination();
     renderEditors();
     renderState();
   }
 
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && saveTimer !== undefined) void save();
+  });
+  window.addEventListener('beforeunload', (event) => {
+    if (!publishing.isSaved()) {
+      if (saveTimer !== undefined) void save();
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  });
   $('copyDetails').addEventListener('toggle', () => {
     if ($('copyDetails').open && !state() && !restoreFailed) {
       publishing.start(sourceLinks());
@@ -385,7 +360,9 @@ export function createPublishingController({
   });
   $('copyAddSource').addEventListener('click', () =>
     change(() => {
-      publishing.setSources([...state()!.sources, '']);
+      const before = state()!.items.length;
+      publishing.add();
+      expandedCopies.set(state()!.items[before].sendKey, true);
     }, true),
   );
   $('copyUseAnalysis').addEventListener('click', () =>
@@ -396,14 +373,23 @@ export function createPublishingController({
   );
   $('copyReset').addEventListener('click', () => {
     if (
-      (state()?.items.length || restoreFailed) &&
-      !window.confirm('Replace this draft? Already published polls will remain in Telegram.')
+      (state() || restoreFailed) &&
+      !window.confirm(
+        'Delete this draft and its saved edits? Already published polls will remain in Telegram.',
+      )
     )
       return;
+    clearTimeout(saveTimer);
+    saveTimer = undefined;
+    saving = false;
     void run(async () => {
-      await publishing.reset(sourceLinks());
+      await publishing.deleteDraft({ unreadable: restoreFailed });
+      saving = false;
+      expandedCopies.clear();
+      destinations.clear();
+      $('copyDetails').open = false;
       restoreFailed = false;
-      status('New draft created.');
+      status('Draft deleted.');
       $('copySaveHint').textContent = 'Draft saved in this browser.';
     });
   });
@@ -414,12 +400,21 @@ export function createPublishingController({
   });
   $('copyForm').addEventListener('submit', (event) => {
     event.preventDefault();
+    if (
+      state()?.items.some(
+        (item) => item.question.trim() || item.answers.some((answer) => answer.trim()),
+      ) &&
+      !window.confirm(
+        'Replace the questions, answers and settings in all copies with their source polls?',
+      )
+    )
+      return;
     authenticated(async () => {
       await run(async () => {
-        await publishing.load();
+        await publishing.load({ replace: true });
         $('copySaveHint').textContent = 'Draft saved in this browser.';
         status(
-          'Source polls loaded. Existing edits were kept. Choose the destination and review the copies.',
+          'All drafts filled from their sources. Choose the destination and review the copies.',
         );
       });
     });
@@ -453,16 +448,17 @@ export function createPublishingController({
         poll.append(element('h3', '', item.question));
         const options = element('ol');
         item.answers.forEach((answer) => options.append(element('li', '', answer)));
-        poll.append(
-          options,
-          element(
-            'p',
-            'small',
-            SETTINGS.map(([key, label]) => `${label}: ${item.settings[key] ? 'Yes' : 'No'}`).join(
-              ' · ',
-            ),
-          ),
-        );
+        const settings = element('div', 'copy-settings');
+        SETTINGS.forEach(([key, text]) => {
+          const label = element('label', 'check');
+          const input = document.createElement('input');
+          input.type = 'checkbox';
+          input.checked = item.settings[key];
+          input.disabled = true;
+          label.append(input, document.createTextNode(text));
+          settings.append(label);
+        });
+        poll.append(options, settings);
         list.append(poll);
       });
       $('publishSummary').append(list);
@@ -481,13 +477,19 @@ export function createPublishingController({
         await publishing.publish(render);
         status('All ready polls were published.');
         $('copySaveHint').textContent = 'Publication results saved in this browser.';
+        if (state()?.items.every((item) => item.delivery.state === 'sent'))
+          $('copyDetails').open = false;
       });
     });
   });
   try {
     const saved = publishing.restore();
     if (saved) {
-      $('copyDetails').open = true;
+      $('copyDetails').open = saved.items.some(
+        (item) =>
+          item.delivery.state !== 'sent' &&
+          (item.source || item.question.trim() || item.answers.some((answer) => answer.trim())),
+      );
       $('copySaveHint').textContent = 'Saved draft restored from this browser.';
     }
   } catch (error) {

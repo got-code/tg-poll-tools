@@ -35,6 +35,11 @@ function fixture() {
       saved = { revision: String(++sequence), draft: structuredClone(draft) };
       return saved.revision;
     },
+    remove(expected) {
+      if (expected !== undefined && (saved?.revision ?? null) !== expected)
+        throw new Error('stale revision');
+      saved = null;
+    },
     async exclusive(action) {
       if (locked) throw new Error('another tab');
       locked = true;
@@ -404,4 +409,92 @@ test('a failed save after loading new content is explicitly unsaved and can be r
   f.store.write = write;
   await editor.save();
   assert.equal(editor.isSaved(), true);
+});
+
+test('deleting waits for queued saves and removes both memory and storage', async () => {
+  const f = fixture(),
+    editor = f.create();
+  editor.start(sources);
+  await editor.load();
+  editor.edit(0, { ...editor.getDraft().items[0], question: 'Pending edit' });
+  const saving = editor.save();
+  await editor.deleteDraft();
+  await saving;
+  assert.equal(editor.getDraft(), null);
+  assert.equal(f.store.read(), null);
+  assert.equal(f.create().restore(), null);
+  editor.start(['https://t.me/sourcechat/42']);
+  await editor.load();
+  assert.equal(editor.getDraft().items[0].question, 'Question 42');
+  assert.equal(f.sent.length, 0);
+});
+
+test('failed or stale deletion keeps the current draft', async () => {
+  const f = fixture(),
+    editor = f.create();
+  editor.start(sources);
+  await editor.load();
+  const other = f.create();
+  other.restore();
+  editor.edit(0, { ...editor.getDraft().items[0], question: 'Updated' });
+  await editor.save();
+  await assert.rejects(other.deleteDraft(), /stale/);
+  assert.ok(other.getDraft());
+  const before = editor.getDraft();
+  f.store.remove = () => {
+    throw new Error('Storage unavailable');
+  };
+  await assert.rejects(editor.deleteDraft(), /Storage unavailable/);
+  assert.deepEqual(editor.getDraft(), before);
+  assert.equal(editor.isBusy(), false);
+});
+
+test('whole cards add, remove and restore together without shifting surviving copies', async () => {
+  const f = fixture(),
+    editor = f.create();
+  editor.start(sources);
+  assert.equal(editor.getDraft().items.length, 3);
+  await editor.load();
+  const middle = editor.getDraft().items[1];
+  editor.edit(1, { ...middle, question: 'Keep this manual edit' });
+  editor.remove(0);
+  assert.equal(editor.getDraft().sources[0], 'https://t.me/sourcechat/11');
+  assert.equal(editor.getDraft().items[0].question, 'Keep this manual edit');
+  assert.equal(editor.getDraft().items[0].sendKey, middle.sendKey);
+  for (let i = 0; i < 25; i++) editor.add();
+  const draft = editor.getDraft();
+  assert.equal(draft.sources.length, 27);
+  assert.equal(draft.items.length, 27);
+  assert.equal(draft.items.at(-1).source, '');
+  await editor.save();
+  assert.deepEqual(f.create().restore(), draft);
+  assert.deepEqual(readStoredDraft({ version: 1, ...f.store.read() }).draft, draft);
+  while (editor.getDraft().items.length) editor.remove(0);
+  await editor.save();
+  assert.equal(readStoredDraft({ version: 1, ...f.store.read() }).draft.items.length, 0);
+  assert.equal(f.create().restore().items.length, 0);
+  editor.add();
+  assert.equal(editor.getDraft().items.length, 1);
+});
+
+test('source changes preserve manual content until explicit refill of all cards', async () => {
+  const f = fixture(),
+    editor = f.create();
+  editor.start(sources);
+  await editor.load();
+  editor.edit(0, { ...editor.getDraft().items[0], question: 'Manual content' });
+  editor.setSource(0, 'https://t.me/sourcechat/20');
+  assert.equal(editor.getDraft().items[0].question, 'Manual content');
+  assert.throws(() => editor.validate(), /links changed/);
+  await editor.save();
+  const restored = f.create();
+  restored.restore();
+  assert.equal(restored.getDraft().items[0].question, 'Manual content');
+  assert.throws(() => restored.validate(), /links changed/);
+  await restored.load({ replace: true });
+  assert.deepEqual(
+    restored.getDraft().items.map((item) => item.question),
+    ['Question 20', 'Question 21', 'Question 22'],
+  );
+  restored.validate();
 });

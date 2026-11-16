@@ -77,6 +77,9 @@
   margin: 0.1rem 0 0;
   accent-color: var(--green);
 }
+#publishSummary .copy-settings input:disabled {
+  opacity: 1;
+}
 .copy-panel details > .actions {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
@@ -113,4 +116,51 @@
   .copy-answer > label {
     flex-basis: 100%;
   }
+}
+
+.copy-panel label,
+.copy-panel input,
+.copy-panel select,
+.copy-panel textarea,
+#publishSummary .check {
+  font-weight: 400;
+}
+.copy-card {
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  padding: 0.8rem 1rem;
+  margin-top: 0.75rem;
+}
+.copy-card > summary {
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+.copy-card .copy-item {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.copy-card > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  list-style: none;
+}
+.copy-card > summary::-webkit-details-marker {
+  display: none;
+}
+.copy-card > summary::before {
+  content: '▸';
+}
+.copy-card[open] > summary::before {
+  content: '▾';
+}
+.copy-title {
+  flex: 1;
+  min-width: 0;
+}
+.copy-card > summary button {
+  flex: 0 0 auto;
+  font-weight: 400;
 }

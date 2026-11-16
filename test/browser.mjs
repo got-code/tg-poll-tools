@@ -1031,15 +1031,27 @@ async function checkPublishing() {
     await page.locator('#link0').fill('https://t.me/sourcechat/10');
     await page.locator('#addPoll').click();
     await page.locator('#addPoll').click();
-    await page.locator('#copyHeading').click();
-    await page.locator('#copySources input').nth(2).waitFor();
+    assert.equal(await page.locator('#copyDetails').evaluate((node) => node.open), false);
     assert.equal(
-      await page.locator('#copySources input').nth(1).getAttribute('placeholder'),
+      await page.evaluate(() =>
+        Boolean(
+          document
+            .getElementById('rows')
+            .compareDocumentPosition(document.getElementById('copySection')) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+      ),
+      true,
+    );
+    await page.locator('#copyHeading').click();
+    await page.locator('.copy-source input').nth(2).waitFor({ state: 'attached' });
+    assert.equal(
+      await page.locator('.copy-source input').nth(1).getAttribute('placeholder'),
       'https://t.me/sourcechat/11',
     );
     await page.locator('#copyAddSource').click();
-    assert.equal(await page.locator('#copySources input').count(), 4);
-    await page.getByRole('button', { name: 'Remove source poll 4', exact: true }).click();
+    assert.equal(await page.locator('.copy-source input').count(), 4);
+    await page.getByRole('button', { name: 'Remove poll 4', exact: true }).click();
     assert.equal(await page.locator('.poll-link').count(), 3);
     await login();
     await page.evaluate(() => {
@@ -1058,14 +1070,25 @@ async function checkPublishing() {
     await page.waitForFunction(
       () => document.getElementById('copySaveHint').textContent === 'Draft saved in this browser.',
     );
-    await page.locator('.copy-item').nth(2).waitFor();
+    await page.locator('.copy-item').nth(2).waitFor({ state: 'attached' });
+    assert.equal(await page.locator('.copy-card[open]').count(), 1);
+    await page.locator('.copy-card').nth(1).locator('summary').click();
+    await page.locator('#copyChats').click();
+    assert.equal(
+      await page
+        .locator('.copy-card')
+        .nth(1)
+        .evaluate((node) => node.open),
+      true,
+    );
+    await page.locator('.copy-card').nth(1).locator('summary').click();
     assert.equal(await page.locator('#copyDestination option:checked').innerText(), 'Source chat');
     await page
       .getByRole('textbox', { name: 'Copy 1 question', exact: true })
       .fill('<script>alert(1)</script> Weekly question?');
-    await page.getByRole('button', { name: 'Add option to copy 1', exact: true }).click();
-    await page.getByRole('textbox', { name: 'Copy 1 option 3', exact: true }).fill('Third');
-    await page.getByRole('button', { name: 'Move up option 3 in copy 1', exact: true }).click();
+    await page
+      .getByRole('textbox', { name: 'Copy 1 answer options', exact: true })
+      .fill('First\nThird\nSecond');
     for (const [label, checked] of [
       ['Anonymous voting', true],
       ['Allow multiple answers', true],
@@ -1100,13 +1123,14 @@ async function checkPublishing() {
       await page.getByRole('textbox', { name: 'Copy 1 question', exact: true }).inputValue(),
       '<script>alert(1)</script> Weekly question?',
     );
+    assert.equal(await page.locator('#copyDetails').evaluate((node) => node.open), true);
     assert.equal(await page.locator('#copyDestination').inputValue(), '-1000000000020');
     assert.equal(await page.evaluate(() => window.sentCopies?.length ?? 0), 0);
     assert.equal(await page.locator('#copyEditors script').count(), 0);
     await setSettingsExpanded(page, true);
     await page.locator('#link0').fill('https://t.me/sourcechat/99');
     assert.equal(
-      await page.locator('#copySources input').first().inputValue(),
+      await page.locator('.copy-source input').first().inputValue(),
       'https://t.me/sourcechat/10',
     );
     await login();
@@ -1139,6 +1163,8 @@ async function checkPublishing() {
     assert.equal(new Set(sent.map((item) => item.key)).size, 3);
     assert.ok(sent.every((item) => item.destination.id === '-1000000000020'));
     assert.deepEqual(sent[0].content.settings, saved.draft.items[0].settings);
+    assert.equal(await page.locator('#copyDetails').evaluate((node) => node.open), false);
+    await page.locator('#copyHeading').click();
     assert.equal(await page.locator('#copyPreview').isDisabled(), true);
     assert.equal(await page.locator('a').filter({ hasText: 'Open new poll' }).count(), 3);
     assert.equal(
@@ -1147,6 +1173,7 @@ async function checkPublishing() {
     );
     await page.screenshot({ path: 'test-output/publishing-dark.png', fullPage: true });
     await page.reload();
+    assert.equal(await page.locator('#copyDetails').evaluate((node) => node.open), false);
     assert.equal(await page.locator('#copyPreview').isDisabled(), true);
     assert.equal(await page.evaluate(() => window.sentCopies?.length ?? 0), 0);
     await page.evaluate(() => {
@@ -1161,6 +1188,126 @@ async function checkPublishing() {
       () => document.getElementById('copyStatus').textContent === 'Sending check recorded.',
     );
     assert.equal(await page.evaluate(() => window.sentCopies?.length ?? 0), 0);
+    page.once('dialog', (dialog) => dialog.dismiss());
+    await page.getByRole('button', { name: 'Delete draft', exact: true }).click();
+    assert.ok(await page.evaluate(() => localStorage.getItem('telegram-poll-tools.draft.v1')));
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByRole('button', { name: 'Delete draft', exact: true }).click();
+    await page.waitForFunction(
+      () => document.getElementById('copyStatus').textContent === 'Draft deleted.',
+    );
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem('telegram-poll-tools.draft.v1')),
+      null,
+    );
+    assert.equal(await page.locator('#copyDetails').evaluate((node) => node.open), false);
+    await page.reload();
+    assert.equal(await page.locator('#copyDetails').evaluate((node) => node.open), false);
+    await page.locator('#copyHeading').click();
+    await page.locator('.copy-source input').first().waitFor();
+    assert.equal(
+      await page.locator('.copy-item').count(),
+      await page.locator('.copy-source input').count(),
+    );
+    assert.equal(
+      await page.getByRole('textbox', { name: 'Copy 1 question', exact: true }).inputValue(),
+      '',
+    );
+    await page.waitForFunction(
+      () => document.getElementById('copySaveHint').textContent === 'Draft saved in this browser.',
+    );
+    await page.reload();
+    assert.equal(await page.locator('#copyDetails').evaluate((node) => node.open), false);
+    await page.locator('#copyHeading').click();
+    await login();
+    await page.locator('#copyLoad').click();
+    await page.waitForFunction(() =>
+      document.getElementById('copyStatus').textContent.startsWith('All drafts filled'),
+    );
+    await page
+      .getByRole('textbox', { name: 'Copy 1 question', exact: true })
+      .fill('Keep this card');
+    const originalKeys = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem('telegram-poll-tools.draft.v1')).draft.items.map(
+        (item) => item.sendKey,
+      ),
+    );
+    await page.locator('#copyAddSource').click();
+    assert.equal(await page.locator('.copy-card').count(), 4);
+    assert.equal(
+      await page.getByRole('textbox', { name: 'Copy 4 question', exact: true }).inputValue(),
+      '',
+    );
+    assert.equal(
+      await page
+        .getByRole('textbox', { name: 'Source poll 4 link', exact: true })
+        .getAttribute('placeholder'),
+      'https://t.me/sourcechat/102',
+    );
+    assert.equal(
+      await page
+        .locator('.copy-card')
+        .nth(1)
+        .evaluate((node) => node.open),
+      false,
+    );
+    await page.getByRole('button', { name: 'Remove poll 2', exact: true }).click();
+    assert.equal(await page.locator('.copy-card').count(), 3);
+    assert.equal(
+      await page.getByRole('textbox', { name: 'Copy 1 question', exact: true }).inputValue(),
+      'Keep this card',
+    );
+    await page
+      .getByRole('textbox', { name: 'Source poll 1 link', exact: true })
+      .fill('https://t.me/sourcechat/200');
+    await page.waitForFunction(
+      () => document.getElementById('copySaveHint').textContent === 'Draft saved in this browser.',
+    );
+    const paired = await page.evaluate(
+      () => JSON.parse(localStorage.getItem('telegram-poll-tools.draft.v1')).draft,
+    );
+    assert.equal(paired.items[1].sendKey, originalKeys[2]);
+    assert.equal(paired.sources[1], 'https://t.me/sourcechat/101');
+    await page.reload();
+    assert.equal(
+      await page.getByRole('textbox', { name: 'Copy 1 question', exact: true }).inputValue(),
+      'Keep this card',
+    );
+    assert.match(
+      await page.locator('.copy-source .field-hint').first().innerText(),
+      /Source changed/,
+    );
+    page.once('dialog', (dialog) => dialog.dismiss());
+    await page.locator('#copyLoad').click();
+    assert.equal(
+      await page.getByRole('textbox', { name: 'Copy 1 question', exact: true }).inputValue(),
+      'Keep this card',
+    );
+    await login();
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.locator('#copyLoad').click();
+    await page.waitForFunction(() =>
+      document.getElementById('copyStatus').textContent.startsWith('All drafts filled'),
+    );
+    assert.equal(
+      await page.getByRole('textbox', { name: 'Copy 1 question', exact: true }).inputValue(),
+      'Copy question 1',
+    );
+    assert.equal(
+      await page.evaluate(
+        () =>
+          JSON.parse(localStorage.getItem('telegram-poll-tools.draft.v1')).draft.items[0].source,
+      ),
+      'https://t.me/sourcechat/200',
+    );
+    for (let remaining = 3; remaining > 0; remaining--) {
+      const first = page.locator('.copy-card').first();
+      if (!(await first.evaluate((node) => node.open))) await first.locator('summary').click();
+      await page.getByRole('button', { name: 'Remove poll 1', exact: true }).click();
+    }
+    assert.equal(await page.locator('.copy-card').count(), 0);
+    await page.locator('#copyAddSource').click();
+    assert.equal(await page.locator('.copy-card').count(), 1);
     cases++;
   } finally {
     await context.close();
