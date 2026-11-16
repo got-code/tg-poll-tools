@@ -1,3 +1,5 @@
+allowBuilds:
+  esbuild: false
 minimumReleaseAgeExclude:
   - '@mtcute/core@0.32.8'
   - '@mtcute/wasm@0.32.8'
