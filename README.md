@@ -1,17 +1,20 @@
-# Poll Intersections
+# Telegram Poll Tools
 
-Find participant intersections across any number of Telegram group polls.
-Group by any poll and filter by a participant minimum in the grouping poll or another poll.
-[Open the app](https://got-code.github.io/tg-poll-intersect/).
+Find participant intersections across Telegram group polls, or create edited copies of
+ordinary polls and publish them in one selected chat, with optional messages before
+and after the batch. Group analysis by any poll and
+filter by a participant minimum in the grouping poll or another poll.
+[Open the app](https://got-code.github.io/tg-poll-tools/).
 
 ## Requirements
 
-Use non-anonymous polls in a group your account can access, and your own
-[Telegram API keys](https://my.telegram.org/apps). Phone and QR sign-in support
+Analysis needs non-anonymous group polls. Copying also supports anonymous ordinary
+polls; publication requires permission to send polls in the destination group or channel.
+Use your own [Telegram API keys](https://my.telegram.org/apps). Phone and QR sign-in support
 2FA; QR requires another device already signed in to Telegram. Telegram may
 require you to vote first and does not expose channel voter lists.
 
-An unanswered poll assumes all its options. Implicit matches are assumptions,
+In analysis, an unanswered poll assumes all its options. Implicit matches are assumptions,
 not explicit votes. Results include anyone who answered at least one poll.
 
 ## Run locally
@@ -36,10 +39,15 @@ GitHub Actions publishes successful builds from `main` to GitHub Pages.
 ## Privacy
 
 The app connects directly to Telegram, with no application backend, analytics or
-runtime CDN. It never votes or sends messages; it may read your chat list to resolve
-private links. Votes and QR tokens stay in memory. CSV excludes Telegram IDs.
+runtime CDN. It never votes. It sends new polls and optional accompanying messages only after you review and confirm
+publication, and may read your chat list to resolve links or select a destination.
+Votes and QR tokens stay in memory. CSV excludes Telegram IDs.
 
-Links, grouping and filter settings are saved in this browser. Demo view settings
+Links, grouping and filter settings are saved in this browser. Draft text, options,
+settings, source links, account/destination references and publication results are
+also saved locally without encryption. Reload restores drafts without sending them.
+If a sending result is uncertain, check Telegram before allowing another attempt.
+Demo view settings
 are temporary and do not overwrite your own settings. Optional remembered login
 encrypts the session and API keys with a separate password. Passwords, login codes
 and encryption keys are never persisted. Reload clears results and locks the saved
@@ -55,6 +63,7 @@ full account permissions. Encryption protects the stored copy, not an unlocked p
 `pnpm lint` check formatting, strict TypeScript contracts and code quality.
 `pnpm test` runs Node tests; `pnpm check` runs the full suite, including the build
 and Chromium tests with synthetic Telegram responses.
+After building, `node test/browser.mjs --publishing-only` checks just the poll-copying flow.
 
 Before the first browser test, install Chromium:
 

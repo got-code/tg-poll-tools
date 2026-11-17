@@ -6,7 +6,7 @@ import * as sessions from '../../src/modules/auth/infrastructure/saved-session.t
 import * as preferences from '../../src/modules/polls/infrastructure/preferences.ts';
 
 // Real application and persistence with an injected synthetic Telegram transport.
-export function mountTestApp({ createClient, auth, fetchPolls, prepareLogin }) {
+export function mountTestApp({ createClient, auth, fetchPolls, prepareLogin, publishing }) {
   const authSession = createAuthSession({ createClient, auth, sessions });
   const results = createPollResults({
     source: { load: (links, progress) => fetchPolls(authSession.getClient(), links, progress) },
@@ -18,5 +18,6 @@ export function mountTestApp({ createClient, auth, fetchPolls, prepareLogin }) {
     preferences,
     explainError: (error) => error.message,
     prepareLogin,
+    publishing,
   });
 }

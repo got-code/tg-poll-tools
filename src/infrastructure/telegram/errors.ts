@@ -52,6 +52,13 @@ const RPC_MESSAGES: Record<string, string> = {
   CHANNEL_PRIVATE: 'This account does not have access to the group.',
   CHANNEL_INVALID: 'Telegram rejected the group reference. Check the poll link.',
   CHAT_ADMIN_REQUIRED: 'Telegram requires administrator permissions for this operation.',
+  CHAT_WRITE_FORBIDDEN: 'This account cannot send messages in the selected chat.',
+  CHAT_RESTRICTED: 'Telegram has restricted this account from sending in the selected chat.',
+  CHAT_SEND_POLL_FORBIDDEN:
+    'Poll publication is disabled in the selected chat. Choose another destination.',
+  CHAT_SEND_MEDIA_FORBIDDEN: 'This account cannot publish media or polls in the selected chat.',
+  BROADCAST_PUBLIC_VOTERS_FORBIDDEN:
+    'Channels require anonymous polls. Enable anonymous voting or choose a group.',
   USER_BANNED_IN_CHANNEL: 'This account is banned from the group.',
   USER_NOT_PARTICIPANT: 'This account is not a member of the group. Join it in Telegram first.',
   PEER_ID_INVALID:

@@ -36,6 +36,8 @@ const result = await build({
   export * from './src/modules/auth/infrastructure/telegram.ts';
   export * from './src/modules/polls/infrastructure/telegram.ts';
   export { createPollSource } from './src/modules/polls/infrastructure/source.ts';
+  export { createTelegramPublishing } from './src/modules/publishing/infrastructure/telegram.ts';
+  export { Long } from '@mtcute/web';
   export { PasswordRequiredError, UserFacingError } from './src/application/errors.ts';
   export { BaseTelegramClient } from '@mtcute/web';
   export { writeStringSession } from '@mtcute/web/utils.js';
@@ -117,6 +119,7 @@ test('the initial JavaScript stays below 100 kB and both Telegram adapters are d
   for (const key of [
     'modules/auth/infrastructure/telegram.ts',
     'modules/polls/infrastructure/telegram.ts',
+    'modules/publishing/infrastructure/telegram.ts',
   ]) {
     assert.equal(manifest[key].isDynamicEntry, true, key);
     assert.equal(initial.has(key), false, key);
@@ -491,5 +494,202 @@ test('the Telegram adapter rejects channel IDs that cannot be represented as a s
   await assert.rejects(
     adapter.fetchPolls(fakeTelegram(), links, () => {}),
     /Invalid group ID/,
+  );
+});
+
+function publishingTelegram({ anonymous = false, fail = null } = {}) {
+  const requests = [];
+  const channel = {
+    _: 'channel',
+    id: 10,
+    accessHash: adapter.Long.ONE,
+    title: 'Source chat',
+    username: 'sourcechat',
+    megagroup: true,
+  };
+  const poll = {
+    _: 'poll',
+    id: adapter.Long.ONE,
+    publicVoters: !anonymous,
+    multipleChoice: true,
+    shuffleAnswers: true,
+    revotingDisabled: true,
+    openAnswers: true,
+    hideResultsUntilClose: true,
+    question: { text: 'A source question', entities: [] },
+    answers: [0, 1].map((index) => ({
+      _: 'pollAnswer',
+      text: { text: `Option ${index}`, entities: [] },
+      option: new Uint8Array([index]),
+    })),
+  };
+  const message = (id) => ({
+    _: 'message',
+    id,
+    date: 1,
+    message: '',
+    peerId: { _: 'peerChannel', channelId: 10 },
+    media: { _: 'messageMediaPoll', poll, results: { _: 'pollResults' } },
+  });
+  const client = {
+    storage: {
+      self: { storeFrom: async () => {} },
+      peers: {
+        getByUsername: async () => ({
+          _: 'inputPeerChannel',
+          channelId: 10,
+          accessHash: adapter.Long.ONE,
+        }),
+        getById: async () => ({
+          _: 'inputPeerChannel',
+          channelId: 10,
+          accessHash: adapter.Long.ONE,
+        }),
+      },
+    },
+    timers: { cancel: async () => {} },
+    handleClientUpdate() {},
+    async call(request) {
+      requests.push(request);
+      if (request._ === 'users.getUsers')
+        return [{ _: 'user', id: 7, self: true, firstName: 'Test' }];
+      if (request._ === 'channels.getMessages')
+        return {
+          _: 'messages.channelMessages',
+          messages: [message(request.id[0].id)],
+          chats: [channel],
+          users: [],
+        };
+      if (request._ === 'messages.sendMedia' || request._ === 'messages.sendMessage') {
+        if (fail) throw fail;
+        return {
+          _: 'updates',
+          date: 1,
+          seq: 1,
+          chats: [channel],
+          users: [],
+          updates: [
+            { _: 'updateMessageID', randomId: request.randomId, id: 100 },
+            {
+              _: 'updateNewChannelMessage',
+              message:
+                request._ === 'messages.sendMessage'
+                  ? {
+                      ...message(100),
+                      media: undefined,
+                      message: request.message,
+                      entities: request.entities,
+                    }
+                  : message(100),
+              pts: 1,
+              ptsCount: 1,
+            },
+          ],
+        };
+      }
+      throw new Error(`Unexpected request: ${request._}`);
+    },
+  };
+  return { client, requests };
+}
+
+test('copying reads anonymous and public poll content through the actual SDK without voter requests', async () => {
+  for (const anonymous of [false, true]) {
+    const f = publishingTelegram({ anonymous });
+    const result = await adapter
+      .createTelegramPublishing(f.client)
+      .load([parseLink('https://t.me/sourcechat/10')]);
+    assert.equal(result.accountId, '7');
+    assert.deepEqual(result.polls[0].destination, {
+      id: '-1000000000010',
+      title: 'Source chat',
+      url: 'https://t.me/sourcechat',
+    });
+    assert.deepEqual(result.polls[0].content.settings, {
+      anonymous,
+      multiple: true,
+      shuffle: true,
+      allowRevoting: false,
+      openAnswers: true,
+      hideResults: true,
+    });
+    assert.deepEqual(
+      f.requests.map((request) => request._),
+      ['users.getUsers', 'channels.getMessages'],
+    );
+  }
+});
+
+test('actual SDK publishes a fresh poll with all six flags and the persisted random ID', async () => {
+  const f = publishingTelegram();
+  const gateway = adapter.createTelegramPublishing(f.client);
+  const {
+    polls: [{ content, destination }],
+  } = await gateway.load([parseLink('https://t.me/sourcechat/10')]);
+  const url = await gateway.publish(destination, content, '1234567890abcdef');
+  assert.equal(url, 'https://t.me/sourcechat/100');
+  const request = f.requests.find((request) => request._ === 'messages.sendMedia');
+  assert.equal(request.randomId.toString(16), '1234567890abcdef');
+  assert.equal(request.media._, 'inputMediaPoll');
+  const poll = request.media.poll;
+  assert.equal(poll.id.toString(), '0');
+  assert.equal(poll.closed, undefined);
+  assert.equal(poll.closeDate, undefined);
+  assert.equal(poll.closePeriod, undefined);
+  assert.equal(poll.publicVoters, true);
+  assert.equal(poll.multipleChoice, true);
+  assert.equal(poll.shuffleAnswers, true);
+  assert.equal(poll.revotingDisabled, true);
+  assert.equal(poll.openAnswers, true);
+  assert.equal(poll.hideResultsUntilClose, true);
+  assert.equal(request.scheduleDate, undefined);
+  assert.equal(request.allowPaidStars, undefined);
+});
+
+test('publication classifies known refusal versus ambiguous transport failure without leaking raw errors', async () => {
+  for (const [error, outcome] of [
+    [Object.assign(new Error('CHAT_WRITE_FORBIDDEN'), { code: 403 }), 'failed'],
+    [Object.assign(new Error('SECRET connection details'), { name: 'NetworkError' }), 'unknown'],
+  ]) {
+    const f = publishingTelegram({ fail: error }),
+      gateway = adapter.createTelegramPublishing(f.client);
+    const {
+      polls: [{ content, destination }],
+    } = await gateway.load([parseLink('https://t.me/sourcechat/10')]);
+    for (const publish of [
+      () => gateway.publish(destination, content, '1234567890abcdef'),
+      () => gateway.publishMessage(destination, 'Accompanying text', '1234567890abcdef'),
+    ])
+      await assert.rejects(publish(), (failure) => {
+        assert.equal(failure.outcome, outcome);
+        assert.equal(failure.details.service, 'Telegram');
+        assert.ok(!failure.message.includes('SECRET'));
+        if (outcome === 'failed') assert.equal(failure.details.rpcCode, 'CHAT_WRITE_FORBIDDEN');
+        return true;
+      });
+  }
+});
+
+test('actual SDK sends an accompanying message as literal text with its persisted random ID', async () => {
+  const f = publishingTelegram(),
+    gateway = adapter.createTelegramPublishing(f.client);
+  const {
+    polls: [{ destination }],
+  } = await gateway.load([parseLink('https://t.me/sourcechat/10')]);
+  const text = '<b>Introduction</b>\n**Plain text** https://example.com';
+  assert.equal(
+    await gateway.publishMessage(destination, text, 'fedcba0987654321'),
+    'https://t.me/sourcechat/100',
+  );
+  const request = f.requests.find((request) => request._ === 'messages.sendMessage');
+  assert.equal(request.message, text);
+  assert.equal(request.randomId.toUnsigned().toString(16), 'fedcba0987654321');
+  assert.equal(request.noWebpage, true);
+  assert.deepEqual(request.entities ?? [], []);
+  assert.equal(request.scheduleDate, undefined);
+  assert.equal(request.allowPaidStars, undefined);
+  assert.equal(
+    f.requests.some((request) => request._ === 'messages.sendMedia'),
+    false,
   );
 });

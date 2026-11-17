@@ -1,6 +1,6 @@
 import { UserFacingError } from '../../../application/errors.ts';
-import { MtPeerNotFoundError } from '@mtcute/web';
-import { getMessages, resolvePeer, iterDialogs } from '@mtcute/web/methods.js';
+import { getMessages } from '@mtcute/web/methods.js';
+import { findTelegramPeer } from '../../../infrastructure/telegram/peers.ts';
 import { readVoters } from './voters.ts';
 import { withTelegramErrors } from '../../../infrastructure/telegram/errors.ts';
 import type { BaseTelegramClient, Poll as TelegramPoll } from '@mtcute/web';
@@ -11,20 +11,7 @@ import type { PollProgress } from '../application/source.ts';
 
 async function findPeer(client: BaseTelegramClient, peer: PollLink['peer']) {
   const id = peer.kind === 'channel' ? -1000000000000 - peer.id : peer.name;
-  if (typeof id === 'number' && !Number.isSafeInteger(id))
-    throw new UserFacingError('Invalid group ID.');
-  try {
-    return await resolvePeer(client, id);
-  } catch (error) {
-    if (typeof id !== 'number' || !(error instanceof MtPeerNotFoundError)) throw error;
-    // Private links contain no access_hash. Resolve joined chats via the dialog list.
-    for await (const dialog of iterDialogs(client, { archived: 'keep' })) {
-      if (dialog.peer.id === id) return dialog.peer.inputPeer;
-    }
-    throw new UserFacingError(
-      'The group was not found in your chats. Check the link and your access.',
-    );
-  }
+  return findTelegramPeer(client, id);
 }
 
 function fingerprint(poll: TelegramPoll) {

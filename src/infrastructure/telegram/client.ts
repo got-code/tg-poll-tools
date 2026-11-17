@@ -41,7 +41,7 @@ export function createClient(
     disableUpdates: !qrLogin,
     updates: false,
     initConnectionOptions: {
-      deviceModel: 'Poll Intersections',
+      deviceModel: 'Telegram Poll Tools',
       appVersion: '0.2',
       systemVersion: 'Browser',
     },
