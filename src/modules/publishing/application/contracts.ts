@@ -13,6 +13,7 @@ export interface PublishingGateway {
   destinations(): Promise<Destination[]>;
   accountId(): Promise<string>;
   publish(destination: Destination, content: PollContent, sendKey: string): Promise<string | null>;
+  publishMessage(destination: Destination, text: string, sendKey: string): Promise<string | null>;
 }
 
 export interface StoredDraft {

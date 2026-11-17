@@ -41,7 +41,8 @@
   display: inline-block;
   margin-bottom: 0.3rem;
 }
-.copy-item textarea {
+.copy-item textarea,
+.copy-message textarea {
   display: block;
   width: 100%;
   font: inherit;
@@ -54,7 +55,8 @@
   padding: 10px;
   margin-top: 5px;
 }
-.copy-item textarea:focus {
+.copy-item textarea:focus,
+.copy-message textarea:focus {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
@@ -91,6 +93,13 @@
 }
 .copy-receipt:empty {
   display: none;
+}
+.copy-message {
+  display: block;
+  margin-top: 1rem;
+}
+.copy-message-preview {
+  white-space: pre-wrap;
 }
 .copy-receipt p {
   margin: 0;

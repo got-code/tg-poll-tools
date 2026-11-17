@@ -1,8 +1,15 @@
 import { resolveLinkValues } from '../../polls/index.ts';
-import { isEditable } from '../domain/drafts.ts';
+import { isEditable, orderedPublications } from '../domain/drafts.ts';
 import { element, elements, createStatus } from '../../../presentation/dom.ts';
 import type { Publishing } from '../application/publishing.ts';
-import type { Destination, PollContent, PollSettings } from '../domain/models.ts';
+import type {
+  Destination,
+  DeliveryItem,
+  DraftMessage,
+  MessagePosition,
+  PollContent,
+  PollSettings,
+} from '../domain/models.ts';
 
 const SETTINGS: [keyof PollSettings, string][] = [
   ['anonymous', 'Anonymous voting'],
@@ -37,6 +44,10 @@ export function createPublishingController({
     copyReset: HTMLButtonElement;
     copySave: HTMLButtonElement;
     copyEditors: HTMLDivElement;
+    copyBeforeMessage: HTMLTextAreaElement;
+    copyAfterMessage: HTMLTextAreaElement;
+    copyBeforeReceipt: HTMLDivElement;
+    copyAfterReceipt: HTMLDivElement;
     copyDestination: HTMLSelectElement;
     copyChats: HTMLButtonElement;
     copyPreview: HTMLButtonElement;
@@ -66,7 +77,7 @@ export function createPublishingController({
   }
   function renderState() {
     const draft = state();
-    const locked = draft?.items.some((item) => !isEditable(item)) ?? false;
+    const locked = draft ? orderedPublications(draft).some((item) => !isEditable(item)) : false;
     for (const input of sourceInputs) input.disabled = busy || locked;
     $('copyAddSource').disabled = busy || locked || !draft;
     $('copyUseAnalysis').disabled = busy || locked || !draft;
@@ -76,11 +87,16 @@ export function createPublishingController({
     $('copySave').disabled = busy;
     $('copyDestination').disabled = busy || locked || !draft?.accountId;
     $('copyChats').disabled = busy || locked || !draft?.accountId;
+    $('copyBeforeMessage').disabled =
+      busy || !draft || (draft.beforeMessage ? !isEditable(draft.beforeMessage) : locked);
+    $('copyAfterMessage').disabled =
+      busy || !draft || Boolean(draft.afterMessage && !isEditable(draft.afterMessage));
     $('copyPreview').disabled =
       busy ||
       saving ||
       !publishing.isSaved() ||
-      !draft?.items.some((item) => item.source && isEditable(item));
+      !draft?.accountId ||
+      !orderedPublications(draft).some(isEditable);
     if (!draft) $('copySaveHint').textContent = 'Drafts are saved only in this browser.';
     if (draft && !saving)
       $('copySaveHint').textContent = publishing.isSaved()
@@ -174,13 +190,69 @@ export function createPublishingController({
       publishing.edit(index, item);
     }, redraw);
   }
+  function renderReceipt(
+    receipt: HTMLElement,
+    item: DeliveryItem | null,
+    index: number | MessagePosition,
+  ) {
+    receipt.replaceChildren();
+    if (!item) return;
+    const name = typeof index === 'number' ? 'poll' : 'message';
+    if (item.delivery.state === 'sent') {
+      receipt.append(element('strong', '', 'Published'));
+      if (item.delivery.url) {
+        const link = element('a', '', `Open new ${name}`);
+        link.href = item.delivery.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        receipt.append(link);
+      }
+    } else if (item.delivery.state === 'sending') receipt.textContent = 'Publishing…';
+    else if (item.delivery.state === 'failed' || item.delivery.state === 'unknown') {
+      receipt.append(element('p', '', item.delivery.message));
+      if (item.delivery.state === 'unknown') {
+        if (state()?.destination?.url) {
+          const link = element('a', '', 'Check destination in Telegram');
+          link.href = state()!.destination!.url!;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          receipt.append(link);
+        }
+        for (const [text, published] of [
+          [`I found this ${name} in Telegram`, true],
+          ['I checked: allow retry', false],
+        ] as const) {
+          const button = element('button', 'text', text);
+          button.type = 'button';
+          button.disabled = busy;
+          button.addEventListener('click', () => {
+            void run(async () => {
+              await publishing.resolveUnknown(index, published);
+              status('Sending check recorded.');
+            });
+          });
+          receipt.append(button);
+        }
+      }
+    }
+  }
+  function renderMessages() {
+    const draft = state();
+    $('copyBeforeMessage').value = draft?.beforeMessage?.text ?? '';
+    $('copyAfterMessage').value = draft?.afterMessage?.text ?? '';
+    renderReceipt($('copyBeforeReceipt'), draft?.beforeMessage ?? null, 'before');
+    renderReceipt($('copyAfterReceipt'), draft?.afterMessage ?? null, 'after');
+  }
   function renderEditors() {
     $('copyEditors').replaceChildren();
     sourceInputs = [];
     sourceHintUpdates = [];
     const sources = state()?.sources ?? [];
     const resolved = resolveLinkValues(sources);
-    const sourceLocked = state()?.items.some((item) => !isEditable(item)) ?? false;
+    const draft = state();
+    const sourceLocked = draft
+      ? orderedPublications(draft).some((item) => !isEditable(item))
+      : false;
     state()?.items.forEach((item, index) => {
       const card = element('details', 'copy-card');
       card.open = expandedCopies.get(item.sendKey) ?? index === 0;
@@ -294,49 +366,14 @@ export function createPublishingController({
       panel.append(settings);
       const receipt = element('div', 'copy-receipt');
       receipt.setAttribute('role', 'status');
-      if (item.delivery.state === 'sent') {
-        receipt.append(element('strong', '', 'Published'));
-        if (item.delivery.url) {
-          const link = element('a', '', 'Open new poll');
-          link.href = item.delivery.url;
-          link.target = '_blank';
-          link.rel = 'noopener noreferrer';
-          receipt.append(link);
-        }
-      } else if (item.delivery.state === 'sending') receipt.textContent = 'Publishing…';
-      else if (item.delivery.state === 'failed' || item.delivery.state === 'unknown') {
-        receipt.append(element('p', '', item.delivery.message));
-        if (item.delivery.state === 'unknown') {
-          if (state()?.destination?.url) {
-            const link = element('a', '', 'Check destination in Telegram');
-            link.href = state()!.destination!.url!;
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            receipt.append(link);
-          }
-          for (const [text, published] of [
-            ['I found this poll in Telegram', true],
-            ['I checked: allow retry', false],
-          ] as const) {
-            const button = element('button', 'text', text);
-            button.type = 'button';
-            button.disabled = busy;
-            button.addEventListener('click', () => {
-              void run(async () => {
-                await publishing.resolveUnknown(index, published);
-                status('Sending check recorded.');
-              });
-            });
-            receipt.append(button);
-          }
-        }
-      }
+      renderReceipt(receipt, item, index);
       card.append(panel, receipt);
       $('copyEditors').append(card);
     });
   }
   function render() {
     renderDestination();
+    renderMessages();
     renderEditors();
     renderState();
   }
@@ -375,7 +412,7 @@ export function createPublishingController({
     if (
       (state() || restoreFailed) &&
       !window.confirm(
-        'Delete this draft and its saved edits? Already published polls will remain in Telegram.',
+        'Delete this draft and its saved edits? Already published polls and messages will remain in Telegram.',
       )
     )
       return;
@@ -398,6 +435,13 @@ export function createPublishingController({
       if (publishing.isSaved()) status('Draft saved.');
     });
   });
+  for (const [id, position] of [
+    ['copyBeforeMessage', 'before'],
+    ['copyAfterMessage', 'after'],
+  ] as const)
+    $(id).addEventListener('input', () =>
+      change(() => publishing.setMessage(position, $(id).value)),
+    );
   $('copyForm').addEventListener('submit', (event) => {
     event.preventDefault();
     if (
@@ -443,6 +487,14 @@ export function createPublishingController({
         element('p', '', `Destination: ${draft.destination!.title}`),
       );
       const list = element('ol');
+      function previewMessage(message: DraftMessage | null, title: string) {
+        if (!message || !isEditable(message)) return;
+        $('publishSummary').append(
+          element('h3', '', title),
+          element('p', 'copy-message-preview', message.text),
+        );
+      }
+      previewMessage(draft.beforeMessage, 'Message before polls');
       items.forEach((item) => {
         const poll = element('li');
         poll.append(element('h3', '', item.question));
@@ -462,8 +514,15 @@ export function createPublishingController({
         list.append(poll);
       });
       $('publishSummary').append(list);
-      $('publishConfirm').textContent =
-        `Publish ${items.length} ${items.length === 1 ? 'poll' : 'polls'}`;
+      previewMessage(draft.afterMessage, 'Message after polls');
+      const messages = [draft.beforeMessage, draft.afterMessage].filter(
+        (message) => message && isEditable(message),
+      ).length;
+      const counts = [
+        items.length ? `${items.length} ${items.length === 1 ? 'poll' : 'polls'}` : '',
+        messages ? `${messages} ${messages === 1 ? 'message' : 'messages'}` : '',
+      ].filter(Boolean);
+      $('publishConfirm').textContent = `Publish ${counts.join(' and ')}`;
       $('publishPreview').showModal();
     } catch (error) {
       report(error);
@@ -475,9 +534,9 @@ export function createPublishingController({
     authenticated(async () => {
       await run(async () => {
         await publishing.publish(render);
-        status('All ready polls were published.');
+        status('All ready polls and messages were published.');
         $('copySaveHint').textContent = 'Publication results saved in this browser.';
-        if (state()?.items.every((item) => item.delivery.state === 'sent'))
+        if (orderedPublications(state()!).every((item) => item.delivery.state === 'sent'))
           $('copyDetails').open = false;
       });
     });
@@ -485,10 +544,12 @@ export function createPublishingController({
   try {
     const saved = publishing.restore();
     if (saved) {
-      $('copyDetails').open = saved.items.some(
+      $('copyDetails').open = orderedPublications(saved).some(
         (item) =>
           item.delivery.state !== 'sent' &&
-          (item.source || item.question.trim() || item.answers.some((answer) => answer.trim())),
+          ('text' in item
+            ? item.text.trim()
+            : item.source || item.question.trim() || item.answers.some((answer) => answer.trim())),
       );
       $('copySaveHint').textContent = 'Saved draft restored from this browser.';
     }

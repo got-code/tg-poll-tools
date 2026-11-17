@@ -23,5 +23,7 @@ export function createPublishingGateway(
     accountId: async () => (await gateway()).accountId(),
     publish: async (target, content, sendKey) =>
       (await gateway()).publish(target, content, sendKey),
+    publishMessage: async (target, text, sendKey) =>
+      (await gateway()).publishMessage(target, text, sendKey),
   };
 }

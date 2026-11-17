@@ -560,7 +560,7 @@ function publishingTelegram({ anonymous = false, fail = null } = {}) {
           chats: [channel],
           users: [],
         };
-      if (request._ === 'messages.sendMedia') {
+      if (request._ === 'messages.sendMedia' || request._ === 'messages.sendMessage') {
         if (fail) throw fail;
         return {
           _: 'updates',
@@ -570,7 +570,20 @@ function publishingTelegram({ anonymous = false, fail = null } = {}) {
           users: [],
           updates: [
             { _: 'updateMessageID', randomId: request.randomId, id: 100 },
-            { _: 'updateNewChannelMessage', message: message(100), pts: 1, ptsCount: 1 },
+            {
+              _: 'updateNewChannelMessage',
+              message:
+                request._ === 'messages.sendMessage'
+                  ? {
+                      ...message(100),
+                      media: undefined,
+                      message: request.message,
+                      entities: request.entities,
+                    }
+                  : message(100),
+              pts: 1,
+              ptsCount: 1,
+            },
           ],
         };
       }
@@ -643,12 +656,40 @@ test('publication classifies known refusal versus ambiguous transport failure wi
     const {
       polls: [{ content, destination }],
     } = await gateway.load([parseLink('https://t.me/sourcechat/10')]);
-    await assert.rejects(gateway.publish(destination, content, '1234567890abcdef'), (failure) => {
-      assert.equal(failure.outcome, outcome);
-      assert.equal(failure.details.service, 'Telegram');
-      assert.ok(!failure.message.includes('SECRET'));
-      if (outcome === 'failed') assert.equal(failure.details.rpcCode, 'CHAT_WRITE_FORBIDDEN');
-      return true;
-    });
+    for (const publish of [
+      () => gateway.publish(destination, content, '1234567890abcdef'),
+      () => gateway.publishMessage(destination, 'Accompanying text', '1234567890abcdef'),
+    ])
+      await assert.rejects(publish(), (failure) => {
+        assert.equal(failure.outcome, outcome);
+        assert.equal(failure.details.service, 'Telegram');
+        assert.ok(!failure.message.includes('SECRET'));
+        if (outcome === 'failed') assert.equal(failure.details.rpcCode, 'CHAT_WRITE_FORBIDDEN');
+        return true;
+      });
   }
+});
+
+test('actual SDK sends an accompanying message as literal text with its persisted random ID', async () => {
+  const f = publishingTelegram(),
+    gateway = adapter.createTelegramPublishing(f.client);
+  const {
+    polls: [{ destination }],
+  } = await gateway.load([parseLink('https://t.me/sourcechat/10')]);
+  const text = '<b>Introduction</b>\n**Plain text** https://example.com';
+  assert.equal(
+    await gateway.publishMessage(destination, text, 'fedcba0987654321'),
+    'https://t.me/sourcechat/100',
+  );
+  const request = f.requests.find((request) => request._ === 'messages.sendMessage');
+  assert.equal(request.message, text);
+  assert.equal(request.randomId.toUnsigned().toString(16), 'fedcba0987654321');
+  assert.equal(request.noWebpage, true);
+  assert.deepEqual(request.entities ?? [], []);
+  assert.equal(request.scheduleDate, undefined);
+  assert.equal(request.allowPaidStars, undefined);
+  assert.equal(
+    f.requests.some((request) => request._ === 'messages.sendMedia'),
+    false,
+  );
 });

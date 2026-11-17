@@ -76,6 +76,16 @@ function fixture() {
       });
       return `https://t.me/sourcechat/${100 + sent.length}`;
     },
+    async publishMessage(destination, text, key) {
+      const draft = store.read().draft;
+      assert.equal(
+        [draft.beforeMessage, draft.afterMessage].find((item) => item?.sendKey === key).delivery
+          .state,
+        'sending',
+      );
+      sent.push({ destination: structuredClone(destination), content: { text }, key });
+      return `https://t.me/sourcechat/${100 + sent.length}`;
+    },
   };
   let key = 0;
   const create = () =>
@@ -106,6 +116,8 @@ test('edits, settings, answer order and destination survive restoration without 
     editor = f.create();
   editor.start(sources);
   await editor.load();
+  editor.setMessage('before', 'Before all polls\nA second line');
+  editor.setMessage('after', 'After all polls');
   editor.edit(0, {
     question: 'New question',
     answers: ['Second', 'First', 'Third'],
@@ -123,6 +135,222 @@ test('edits, settings, answer order and destination survive restoration without 
   const decoded = readStoredDraft({ version: 1, ...f.store.read(), credentials: 'SECRET' });
   assert.deepEqual(decoded.draft, editor.getDraft());
   assert.ok(!JSON.stringify(decoded).includes('SECRET'));
+});
+
+test('optional messages publish once in order for every before/after combination', async () => {
+  for (const before of [false, true]) {
+    for (const after of [false, true]) {
+      const f = fixture(),
+        editor = f.create();
+      editor.start(sources);
+      editor.setMessage('before', before ? 'Introduction' : '  \n');
+      editor.setMessage('after', after ? 'Closing message' : '');
+      await editor.load();
+      await editor.load({ replace: true });
+      const draft = editor.getDraft();
+      assert.equal(draft.beforeMessage?.text ?? null, before ? 'Introduction' : null);
+      assert.equal(draft.afterMessage?.text ?? null, after ? 'Closing message' : null);
+      await editor.publish(() => {});
+      assert.deepEqual(
+        f.sent.map(({ content }) => content.text ?? content.question),
+        [
+          ...(before ? ['Introduction'] : []),
+          'Question 10',
+          'Question 11',
+          'Question 12',
+          ...(after ? ['Closing message'] : []),
+        ],
+      );
+      assert.ok(f.sent.every(({ destination }) => destination.id === target.id));
+      assert.equal(new Set(f.sent.map(({ key }) => key)).size, f.sent.length);
+      await assert.rejects(
+        editor.publish(() => {}),
+        /no remaining/,
+      );
+      if (before) assert.throws(() => editor.setMessage('before', ''), /already been sent/);
+      if (after) assert.throws(() => editor.setMessage('after', 'Changed'), /already been sent/);
+    }
+  }
+});
+
+test('message failures stop later items, and retry skips the sent prefix with stable keys', async () => {
+  for (const position of ['before', 'after']) {
+    const f = fixture(),
+      editor = f.create();
+    editor.start(sources);
+    await editor.load();
+    editor.setMessage('before', 'Introduction');
+    editor.setMessage('after', 'Closing message');
+    const draft = editor.getDraft();
+    const key = draft[`${position}Message`].sendKey;
+    const send = f.gateway.publishMessage;
+    f.gateway.publishMessage = async (...args) => {
+      if (args[2] === key) throw failure();
+      return send(...args);
+    };
+    await assert.rejects(
+      editor.publish(() => {}),
+      /refused/,
+    );
+    assert.equal(f.sent.length, position === 'before' ? 0 : 4);
+    assert.equal(editor.getDraft()[`${position}Message`].delivery.state, 'failed');
+    editor.setMessage(position, `Updated ${position}`);
+    assert.equal(editor.getDraft()[`${position}Message`].sendKey, key);
+    f.gateway.publishMessage = send;
+    await editor.publish(() => {});
+    assert.equal(f.sent.length, 5);
+    assert.equal(new Set(f.sent.map(({ key }) => key)).size, 5);
+    assert.deepEqual(
+      f.sent.map(({ key }) => key),
+      [
+        draft.beforeMessage.sendKey,
+        ...draft.items.map(({ sendKey }) => sendKey),
+        draft.afterMessage.sendKey,
+      ],
+    );
+  }
+});
+
+test('an uncertain intro blocks all later sends until checked, including after reload', async () => {
+  const f = fixture(),
+    editor = f.create();
+  editor.start(sources);
+  await editor.load();
+  editor.setMessage('before', 'Introduction');
+  editor.setMessage('after', 'Closing message');
+  const key = editor.getDraft().beforeMessage.sendKey;
+  const send = f.gateway.publishMessage;
+  f.gateway.publishMessage = async () => {
+    throw failure('unknown');
+  };
+  await assert.rejects(editor.publish(() => {}));
+  const restored = f.create();
+  restored.restore();
+  assert.equal(restored.getDraft().beforeMessage.delivery.state, 'unknown');
+  await assert.rejects(
+    restored.publish(() => {}),
+    /Check the uncertain/,
+  );
+  assert.throws(() => restored.setDestination(target), /cannot change/);
+  assert.throws(() => restored.setSource(0, sources[0]), /new draft/);
+  await assert.rejects(restored.load(), /new draft/);
+  assert.equal(f.sent.length, 0);
+  await restored.resolveUnknown('before', false);
+  assert.equal(restored.getDraft().beforeMessage.sendKey, key);
+  f.gateway.publishMessage = send;
+  await restored.publish(() => {});
+  assert.equal(f.sent.length, 5);
+  assert.equal(f.sent[0].key, key);
+});
+
+test('an uncertain poll blocks the final message and acknowledgement continues without resending it', async () => {
+  const f = fixture(),
+    editor = f.create();
+  editor.start([sources[0]]);
+  await editor.load();
+  editor.setMessage('before', 'Introduction');
+  editor.setMessage('after', 'Closing message');
+  f.gateway.publish = async () => {
+    throw failure('unknown');
+  };
+  await assert.rejects(editor.publish(() => {}));
+  await assert.rejects(
+    editor.publish(() => {}),
+    /Check the uncertain/,
+  );
+  assert.equal(f.sent.length, 1);
+  await editor.resolveUnknown(0, true);
+  await editor.publish(() => {});
+  assert.deepEqual(
+    f.sent.map(({ content }) => content.text),
+    ['Introduction', 'Closing message'],
+  );
+});
+
+test('message sending intent survives a storage failure without automatically duplicating a message', async () => {
+  for (const phase of ['sending', 'sent']) {
+    const f = fixture(),
+      editor = f.create();
+    editor.start([sources[0]]);
+    await editor.load();
+    editor.setMessage('before', 'Introduction');
+    const write = f.store.write;
+    f.store.write = (draft, revision) => {
+      if (draft.beforeMessage.delivery.state === phase) throw new Error('storage full');
+      return write(draft, revision);
+    };
+    await assert.rejects(
+      editor.publish(() => {}),
+      /storage full/,
+    );
+    assert.equal(f.sent.length, phase === 'sending' ? 0 : 1);
+    f.store.write = write;
+    const restored = f.create();
+    restored.restore();
+    assert.equal(
+      restored.getDraft().beforeMessage.delivery.state,
+      phase === 'sending' ? 'ready' : 'unknown',
+    );
+    if (phase === 'sent') {
+      await restored.resolveUnknown('before', true);
+      await restored.publish(() => {});
+      assert.equal(f.sent.length, 2);
+      assert.equal(f.sent[1].content.question, 'Question 10');
+    }
+  }
+});
+
+test('messages validate before any send, can be removed unsent, and cannot be prepended after polls', async () => {
+  const f = fixture(),
+    editor = f.create();
+  editor.start([sources[0]]);
+  await editor.load();
+  editor.setMessage('after', 'x'.repeat(4097));
+  await assert.rejects(
+    editor.publish(() => {}),
+    /4096/,
+  );
+  assert.equal(f.sent.length, 0);
+  editor.setMessage('after', '  ');
+  assert.equal(editor.getDraft().afterMessage, null);
+  await editor.publish(() => {});
+  assert.throws(() => editor.setMessage('before', 'Too late'), /after sending has begun/);
+  editor.setMessage('after', 'A closing message');
+  await editor.publish(() => {});
+  assert.equal(f.sent.length, 2);
+});
+
+test('old drafts restore without messages; invalid message data and shared sending keys are rejected', async () => {
+  const f = fixture(),
+    editor = f.create();
+  editor.start(sources);
+  await editor.load();
+  const old = { version: 1, ...f.store.read() };
+  delete old.draft.beforeMessage;
+  delete old.draft.afterMessage;
+  assert.equal(readStoredDraft(old).draft.beforeMessage, null);
+  assert.equal(readStoredDraft(old).draft.afterMessage, null);
+  editor.setMessage('before', '<script>Literal text</script>');
+  editor.setMessage('after', 'Closing message');
+  await editor.save();
+  for (const alter of [
+    (draft) => {
+      draft.beforeMessage.text = 7;
+    },
+    (draft) => {
+      draft.afterMessage.delivery = { state: 'sent', url: 'https://evil.example/1' };
+    },
+    (draft) => {
+      draft.beforeMessage.sendKey = draft.items[0].sendKey;
+    },
+    (draft) => {
+      draft.afterMessage.sendKey = draft.beforeMessage.sendKey;
+    },
+  ]) {
+    const value = { version: 1, ...f.store.read() };
+    alter(value.draft);
+    assert.throws(() => readStoredDraft(value), /saved draft cannot be read/);
+  }
 });
 
 test('changing the source list preserves edits and sending keys of unchanged copies', async () => {

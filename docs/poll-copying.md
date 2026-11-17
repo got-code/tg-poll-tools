@@ -39,6 +39,11 @@ Pages address: `https://got-code.github.io/tg-poll-tools/`.
 - Use one destination for the whole batch, initially the first source poll's
   chat. Users can choose a different Telegram destination that permits polls.
 - Show the edited polls and destination before explicit user publication.
+- Optionally add a separate plain-text message before and/or after the whole batch.
+  Blank fields are skipped. Messages share the destination and appear in the preview
+  in sending order. Their text, sending keys and outcomes are saved with the draft.
+  A failure stops the batch; check uncertain outcomes before continuing. Retries
+  skip all confirmed publications, including accompanying messages.
 - Preserve the draft's order and track the outcome of each publication. Give
   links to successfully created polls when Telegram provides a permalink. Prevent duplicate clicks and duplicate
   publication when retrying a batch or recovering after interruption.
@@ -67,8 +72,8 @@ storage; destination and publication; integration checks and user-reviewed relea
 
 ## Draft lifecycle
 
-Delete draft requires confirmation and removes the browser draft, never Telegram
-polls. Reopening creates a fresh draft from the current comparison selection.
-On page load, only drafts with unsent polls (including failed/unknown outcomes)
+Delete draft requires confirmation and removes the browser draft, never published Telegram
+polls or messages. Reopening creates a fresh draft from the current comparison selection.
+On page load, only drafts with unsent polls or messages (including failed/unknown outcomes)
 open automatically. Empty and fully published drafts start collapsed. Users
 control expansion thereafter; deletion or full publication collapses the block.

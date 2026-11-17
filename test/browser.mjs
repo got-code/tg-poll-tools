@@ -47,7 +47,14 @@ const fixture = await build({
               throw new PublicationFailure('Synthetic publication failure.', window.copyFailure,
                 {service:'Telegram',kind:'rpc',rpcCode:'CHAT_WRITE_FORBIDDEN',status:403});
             window.sentCopies.push({destination, content, key});
+            (window.sendOrder ??= []).push({kind: 'poll', key});
             return 'https://t.me/otherchat/' + (100 + window.sentCopies.length);
+          },
+          publishMessage: async (destination, text, key) => {
+            window.sentMessages ??= [];
+            window.sentMessages.push({destination, text, key});
+            (window.sendOrder ??= []).push({kind: 'message', key});
+            return 'https://t.me/otherchat/' + (200 + window.sentMessages.length);
           },
         },
       }),
@@ -1083,6 +1090,8 @@ async function checkPublishing() {
     );
     await page.locator('.copy-card').nth(1).locator('summary').click();
     assert.equal(await page.locator('#copyDestination option:checked').innerText(), 'Source chat');
+    await page.locator('#copyBeforeMessage').fill('<b>Weekly polls</b>\nChoose your answers.');
+    await page.locator('#copyAfterMessage').fill('Thank you!\nSee you next week.');
     await page
       .getByRole('textbox', { name: 'Copy 1 question', exact: true })
       .fill('<script>alert(1)</script> Weekly question?');
@@ -1109,6 +1118,8 @@ async function checkPublishing() {
       JSON.parse(localStorage.getItem('telegram-poll-tools.draft.v1')),
     );
     assert.equal(saved.draft.items.length, 3);
+    assert.equal(saved.draft.beforeMessage.text, '<b>Weekly polls</b>\nChoose your answers.');
+    assert.equal(saved.draft.afterMessage.text, 'Thank you!\nSee you next week.');
     assert.deepEqual(saved.draft.items[0].answers, ['First', 'Third', 'Second']);
     assert.deepEqual(saved.draft.items[0].settings, {
       anonymous: true,
@@ -1126,6 +1137,15 @@ async function checkPublishing() {
     assert.equal(await page.locator('#copyDetails').evaluate((node) => node.open), true);
     assert.equal(await page.locator('#copyDestination').inputValue(), '-1000000000020');
     assert.equal(await page.evaluate(() => window.sentCopies?.length ?? 0), 0);
+    assert.equal(await page.evaluate(() => window.sentMessages?.length ?? 0), 0);
+    assert.equal(
+      await page.locator('#copyBeforeMessage').inputValue(),
+      saved.draft.beforeMessage.text,
+    );
+    assert.equal(
+      await page.locator('#copyAfterMessage').inputValue(),
+      saved.draft.afterMessage.text,
+    );
     assert.equal(await page.locator('#copyEditors script').count(), 0);
     await setSettingsExpanded(page, true);
     await page.locator('#link0').fill('https://t.me/sourcechat/99');
@@ -1140,11 +1160,22 @@ async function checkPublishing() {
     await page.locator('#copyPreview').click();
     assert.equal(await page.locator('#publishPreview').isVisible(), true);
     assert.match(await page.locator('#publishSummary').innerText(), /Other chat/);
+    assert.equal(await page.locator('#publishSummary b').count(), 0);
+    assert.deepEqual(await page.locator('#publishSummary > h3').allTextContents(), [
+      'Message before polls',
+      'Message after polls',
+    ]);
+    assert.equal(
+      await page.locator('#publishConfirm').innerText(),
+      'Publish 3 polls and 2 messages',
+    );
     await page.locator('#publishConfirm').click();
     await page.waitForFunction(() =>
       document.getElementById('copyStatus').textContent.includes('Synthetic publication failure'),
     );
     assert.equal(await page.evaluate(() => window.sentCopies.length), 1);
+    assert.equal(await page.evaluate(() => window.sentMessages.length), 1);
+    assert.equal(await page.locator('#copyBeforeMessage').isDisabled(), true);
     assert.equal(
       await page.getByRole('textbox', { name: 'Copy 1 question', exact: true }).isDisabled(),
       true,
@@ -1153,20 +1184,43 @@ async function checkPublishing() {
       window.copyFailure = null;
     });
     await page.locator('#copyPreview').click();
-    assert.equal(await page.locator('#publishConfirm').innerText(), 'Publish 2 polls');
+    assert.equal(
+      await page.locator('#publishConfirm').innerText(),
+      'Publish 2 polls and 1 message',
+    );
     await page.locator('#publishConfirm').click();
     await page.waitForFunction(
-      () => document.getElementById('copyStatus').textContent === 'All ready polls were published.',
+      () =>
+        document.getElementById('copyStatus').textContent ===
+        'All ready polls and messages were published.',
     );
     const sent = await page.evaluate(() => window.sentCopies);
     assert.equal(sent.length, 3);
     assert.equal(new Set(sent.map((item) => item.key)).size, 3);
     assert.ok(sent.every((item) => item.destination.id === '-1000000000020'));
     assert.deepEqual(sent[0].content.settings, saved.draft.items[0].settings);
+    const messages = await page.evaluate(() => window.sentMessages);
+    assert.deepEqual(
+      messages.map(({ text }) => text),
+      [saved.draft.beforeMessage.text, saved.draft.afterMessage.text],
+    );
+    assert.ok(messages.every(({ destination }) => destination.id === '-1000000000020'));
+    assert.deepEqual(await page.evaluate(() => window.sendOrder.map(({ kind }) => kind)), [
+      'message',
+      'poll',
+      'poll',
+      'poll',
+      'message',
+    ]);
+    assert.equal(
+      await page.evaluate(() => new Set(window.sendOrder.map(({ key }) => key)).size),
+      5,
+    );
     assert.equal(await page.locator('#copyDetails').evaluate((node) => node.open), false);
     await page.locator('#copyHeading').click();
     assert.equal(await page.locator('#copyPreview').isDisabled(), true);
     assert.equal(await page.locator('a').filter({ hasText: 'Open new poll' }).count(), 3);
+    assert.equal(await page.locator('a').filter({ hasText: 'Open new message' }).count(), 2);
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
       false,
@@ -1178,11 +1232,47 @@ async function checkPublishing() {
     assert.equal(await page.evaluate(() => window.sentCopies?.length ?? 0), 0);
     await page.evaluate(() => {
       const value = JSON.parse(localStorage.getItem('telegram-poll-tools.draft.v1'));
+      value.draft.afterMessage.delivery = { state: 'sending' };
+      localStorage.setItem('telegram-poll-tools.draft.v1', JSON.stringify(value));
+    });
+    await page.reload();
+    assert.equal(await page.locator('#copyDetails').evaluate((node) => node.open), true);
+    assert.match(await page.locator('#copyAfterReceipt').innerText(), /interrupted/);
+    await page
+      .locator('#copyAfterReceipt')
+      .getByRole('button', { name: 'I checked: allow retry', exact: true })
+      .click();
+    await page.waitForFunction(
+      () => document.getElementById('copyStatus').textContent === 'Sending check recorded.',
+    );
+    assert.equal(await page.evaluate(() => window.sentMessages?.length ?? 0), 0);
+    await login();
+    await page.locator('#copyPreview').click();
+    assert.equal(await page.locator('#publishConfirm').innerText(), 'Publish 1 message');
+    assert.equal(await page.locator('#publishSummary li').count(), 0);
+    assert.deepEqual(await page.locator('#publishSummary > h3').allTextContents(), [
+      'Message after polls',
+    ]);
+    await page.locator('#publishConfirm').click();
+    await page.waitForFunction(
+      () =>
+        document.getElementById('copyStatus').textContent ===
+        'All ready polls and messages were published.',
+    );
+    assert.equal(await page.evaluate(() => window.sentCopies?.length ?? 0), 0);
+    assert.equal(await page.evaluate(() => window.sentMessages.length), 1);
+    assert.equal(
+      await page.evaluate(() => window.sentMessages[0].key),
+      saved.draft.afterMessage.sendKey,
+    );
+    assert.equal(await page.locator('#copyDetails').evaluate((node) => node.open), false);
+    await page.evaluate(() => {
+      const value = JSON.parse(localStorage.getItem('telegram-poll-tools.draft.v1'));
       value.draft.items[0].delivery = { state: 'sending' };
       localStorage.setItem('telegram-poll-tools.draft.v1', JSON.stringify(value));
     });
     await page.reload();
-    assert.match(await page.locator('.copy-receipt').first().innerText(), /interrupted/);
+    assert.match(await page.locator('.copy-card .copy-receipt').first().innerText(), /interrupted/);
     await page.getByRole('button', { name: 'I found this poll in Telegram', exact: true }).click();
     await page.waitForFunction(
       () => document.getElementById('copyStatus').textContent === 'Sending check recorded.',

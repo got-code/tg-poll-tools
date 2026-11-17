@@ -1,9 +1,21 @@
 import { UserFacingError } from '../../../application/errors.ts';
 import { readPollLinks, linkIdentity, resolveLinkValues } from '../../polls/index.ts';
-import { requireEditable, validateContent, isEditable } from '../domain/drafts.ts';
+import {
+  requireEditable,
+  validateContent,
+  validateMessage,
+  isEditable,
+  orderedPublications,
+} from '../domain/drafts.ts';
 import { PublicationFailure } from './contracts.ts';
 import type { DraftStore, PublishingGateway } from './contracts.ts';
-import type { Destination, DraftItem, PollContent, PollDraft } from '../domain/models.ts';
+import type {
+  Destination,
+  DraftItem,
+  MessagePosition,
+  PollContent,
+  PollDraft,
+} from '../domain/models.ts';
 
 export function createPublishing({
   gateway,
@@ -40,7 +52,7 @@ export function createPublishing({
   }
   function requireSourceEditing() {
     requireIdle();
-    if (requireDraft().items.some((item) => !isEditable(item)))
+    if (orderedPublications(requireDraft()).some((item) => !isEditable(item)))
       throw new UserFacingError('Start a new draft to change sources after sending has begun.');
   }
   function requireDraft() {
@@ -61,7 +73,7 @@ export function createPublishing({
     }
   }
   function pendingItems() {
-    return requireDraft().items.filter(isEditable);
+    return orderedPublications(requireDraft()).filter(isEditable);
   }
   function validate() {
     const current = requireDraft();
@@ -80,8 +92,15 @@ export function createPublishing({
     if (!current.destination || !current.accountId)
       throw new UserFacingError('Choose a destination.');
     if (!pendingItems().length)
-      throw new UserFacingError('There are no remaining polls ready to publish.');
-    pendingItems().forEach(validateContent);
+      throw new UserFacingError('There are no remaining polls or messages ready to publish.');
+    if (orderedPublications(current).some((item) => item.delivery.state === 'unknown'))
+      throw new UserFacingError(
+        'Check the uncertain sending result in Telegram before publishing the remaining items.',
+      );
+    for (const item of pendingItems()) {
+      if ('text' in item) validateMessage(item);
+      else validateContent(item);
+    }
   }
   function save() {
     const value = structuredClone(requireDraft());
@@ -120,7 +139,7 @@ export function createPublishing({
         });
       }
       writeFailed = false;
-      for (const item of draft?.items ?? [])
+      for (const item of draft ? orderedPublications(draft) : [])
         if (item.delivery.state === 'sending')
           item.delivery = {
             state: 'unknown',
@@ -137,6 +156,8 @@ export function createPublishing({
         items: (sources.length ? sources : ['']).map(() => blankItem()),
         destination: null,
         accountId: null,
+        beforeMessage: null,
+        afterMessage: null,
       };
       return structuredClone(draft);
     },
@@ -206,9 +227,27 @@ export function createPublishing({
         delivery: { state: 'ready' },
       });
     },
+    setMessage(position: MessagePosition, text: string) {
+      requireIdle();
+      const current = requireDraft();
+      const field = position === 'before' ? 'beforeMessage' : 'afterMessage';
+      const message = current[field];
+      if (message) requireEditable(message);
+      else if (
+        position === 'before' &&
+        text.trim() &&
+        orderedPublications(current).some((item) => !isEditable(item))
+      )
+        throw new UserFacingError(
+          'A message cannot be added before polls after sending has begun.',
+        );
+      current[field] = text.trim()
+        ? { text, sendKey: message?.sendKey ?? newKey(), delivery: { state: 'ready' } }
+        : null;
+    },
     setDestination(destination: Destination) {
       requireIdle();
-      if (requireDraft().items.some((item) => !isEditable(item)))
+      if (orderedPublications(requireDraft()).some((item) => !isEditable(item)))
         throw new UserFacingError('The destination cannot change after sending has begun.');
       requireDraft().destination = structuredClone(destination);
     },
@@ -218,7 +257,7 @@ export function createPublishing({
     async load({ replace = false } = {}) {
       requireIdle();
       const current = requireDraft();
-      if (current.items.some((item) => !isEditable(item)))
+      if (orderedPublications(current).some((item) => !isEditable(item)))
         throw new UserFacingError('Start a new draft before loading different source polls.');
       const links = readPollLinks(current.sources);
       busy = true;
@@ -241,6 +280,8 @@ export function createPublishing({
         draft = {
           sources: [...current.sources],
           accountId: loaded.accountId,
+          beforeMessage: current.beforeMessage,
+          afterMessage: current.afterMessage,
           destination:
             current.accountId === loaded.accountId && current.destination
               ? current.destination
@@ -260,11 +301,17 @@ export function createPublishing({
         busy = false;
       }
     },
-    async resolveUnknown(index: number, published: boolean) {
+    async resolveUnknown(index: number | MessagePosition, published: boolean) {
       requireIdle();
-      const item = requireDraft().items[index];
+      const current = requireDraft();
+      const item =
+        typeof index === 'number'
+          ? current.items[index]
+          : index === 'before'
+            ? current.beforeMessage
+            : current.afterMessage;
       if (item?.delivery.state !== 'unknown')
-        throw new UserFacingError('This poll does not need a sending check.');
+        throw new UserFacingError('This item does not need a sending check.');
       item.delivery = published ? { state: 'sent', url: null } : { state: 'ready' };
       await save();
     },
@@ -284,7 +331,7 @@ export function createPublishing({
             throw new UserFacingError(
               'This draft belongs to a different Telegram account. Create a new draft with the current account.',
             );
-          for (const item of current.items) {
+          for (const item of orderedPublications(current)) {
             if (!isEditable(item)) continue;
             const previous = item.delivery;
             item.delivery = { state: 'sending' };
@@ -297,7 +344,10 @@ export function createPublishing({
             changed();
             let failure: unknown;
             try {
-              const url = await gateway.publish(current.destination!, item, item.sendKey);
+              const url =
+                'text' in item
+                  ? await gateway.publishMessage(current.destination!, item.text, item.sendKey)
+                  : await gateway.publish(current.destination!, item, item.sendKey);
               item.delivery = { state: 'sent', url };
             } catch (error) {
               failure =

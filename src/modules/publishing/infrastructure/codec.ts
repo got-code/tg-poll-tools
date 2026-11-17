@@ -1,6 +1,12 @@
 import { UserFacingError } from '../../../application/errors.ts';
 import { parseLink } from '../../polls/index.ts';
-import type { Destination, Delivery, PollDraft, PollSettings } from '../domain/models.ts';
+import type {
+  Destination,
+  Delivery,
+  DraftMessage,
+  PollDraft,
+  PollSettings,
+} from '../domain/models.ts';
 import { SETTING_KEYS } from '../domain/models.ts';
 import type { StoredDraft } from '../application/contracts.ts';
 
@@ -58,22 +64,33 @@ export function readStoredDraft(value: unknown): StoredDraft {
     )
       throw new Error('Invalid saved draft');
     const keys = new Set<string>();
+    function readKey(value: unknown): string {
+      if (typeof value !== 'string' || !/^[a-f0-9]{16}$/.test(value) || keys.has(value))
+        throw new Error('Invalid sending key');
+      keys.add(value);
+      return value;
+    }
+    function readMessage(value: unknown): DraftMessage | null {
+      // Drafts saved before accompanying messages were introduced have no such fields.
+      if (value === undefined || value === null) return null;
+      if (!record(value) || typeof value.text !== 'string' || !value.text.trim())
+        throw new Error('Invalid accompanying message');
+      const delivery = readDelivery(value.delivery);
+      if (!data.accountId && delivery.state !== 'ready') throw new Error('Invalid draft');
+      return { text: value.text, sendKey: readKey(value.sendKey), delivery };
+    }
     const items = data.items.map((item: unknown) => {
       if (
         !record(item) ||
         typeof item.question !== 'string' ||
         !strings(item.answers) ||
         typeof item.source !== 'string' ||
-        typeof item.sendKey !== 'string' ||
-        !/^[a-f0-9]{16}$/.test(item.sendKey) ||
-        keys.has(item.sendKey) ||
         !record(item.settings)
       )
         throw new Error('Invalid poll');
       if (item.source) parseLink(item.source);
       else if (readDelivery(item.delivery).state !== 'ready')
         throw new Error('Unfilled poll has delivery state');
-      keys.add(item.sendKey);
       const settings = {} as PollSettings;
       for (const key of SETTING_KEYS) {
         if (typeof item.settings[key] !== 'boolean') throw new Error('Invalid setting');
@@ -81,7 +98,7 @@ export function readStoredDraft(value: unknown): StoredDraft {
       }
       return {
         source: item.source,
-        sendKey: item.sendKey,
+        sendKey: readKey(item.sendKey),
         question: item.question,
         answers: [...item.answers],
         settings,
@@ -93,6 +110,8 @@ export function readStoredDraft(value: unknown): StoredDraft {
       accountId: data.accountId,
       destination: data.destination === null ? null : readDestination(data.destination),
       items,
+      beforeMessage: readMessage(data.beforeMessage),
+      afterMessage: readMessage(data.afterMessage),
     };
     if (items.some((item) => item.source) && !draft.accountId) throw new Error('Invalid draft');
     return { revision: value.revision, draft };

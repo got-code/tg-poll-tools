@@ -1,7 +1,8 @@
 # Telegram Poll Tools
 
 Find participant intersections across Telegram group polls, or create edited copies of
-ordinary polls and publish them in one selected chat. Group analysis by any poll and
+ordinary polls and publish them in one selected chat, with optional messages before
+and after the batch. Group analysis by any poll and
 filter by a participant minimum in the grouping poll or another poll.
 [Open the app](https://got-code.github.io/tg-poll-tools/).
 
@@ -38,7 +39,7 @@ GitHub Actions publishes successful builds from `main` to GitHub Pages.
 ## Privacy
 
 The app connects directly to Telegram, with no application backend, analytics or
-runtime CDN. It never votes. It sends new polls only after you review and confirm
+runtime CDN. It never votes. It sends new polls and optional accompanying messages only after you review and confirm
 publication, and may read your chat list to resolve links or select a destination.
 Votes and QR tokens stay in memory. CSV excludes Telegram IDs.
 

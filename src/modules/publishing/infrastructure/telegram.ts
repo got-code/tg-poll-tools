@@ -1,5 +1,5 @@
 import { Long } from '@mtcute/web';
-import { getMessages, getMe, iterDialogs, sendMedia } from '@mtcute/web/methods.js';
+import { getMessages, getMe, iterDialogs, sendMedia, sendText } from '@mtcute/web/methods.js';
 import { ServiceError, UserFacingError } from '../../../application/errors.ts';
 import { findTelegramPeer } from '../../../infrastructure/telegram/peers.ts';
 import {
@@ -7,7 +7,7 @@ import {
   readTelegramFailure,
 } from '../../../infrastructure/telegram/errors.ts';
 import { PublicationFailure } from '../application/contracts.ts';
-import type { BaseTelegramClient, Peer } from '@mtcute/web';
+import type { BaseTelegramClient, Message, Peer } from '@mtcute/web';
 import type { PublishingGateway } from '../application/contracts.ts';
 import type { Destination } from '../domain/models.ts';
 
@@ -48,6 +48,36 @@ async function publicationFailure(error: unknown, outcome: 'failed' | 'unknown')
 }
 
 export function createTelegramPublishing(client: BaseTelegramClient): PublishingGateway {
+  async function sendTo(
+    target: Destination,
+    send: (peer: Awaited<ReturnType<typeof findTelegramPeer>>) => Promise<Message>,
+  ) {
+    let peer;
+    try {
+      peer = await findTelegramPeer(client, Number(target.id));
+    } catch (error) {
+      return publicationFailure(error, 'failed');
+    }
+    try {
+      const message = await send(peer);
+      // A missing permalink must not turn a confirmed publication into a failure.
+      try {
+        return message.link;
+      } catch {
+        return null;
+      }
+    } catch (error) {
+      const failure = readTelegramFailure(error);
+      const definitive =
+        failure.kind === 'rpc' &&
+        failure.status !== undefined &&
+        failure.status >= 400 &&
+        failure.status < 500 &&
+        failure.rpcCode !== 'RANDOM_ID_DUPLICATE';
+      return publicationFailure(error, definitive ? 'failed' : 'unknown');
+    }
+  }
+
   return {
     accountId: () => withTelegramErrors(async () => String((await getMe(client)).id)),
     load: (links) =>
@@ -105,15 +135,9 @@ export function createTelegramPublishing(client: BaseTelegramClient): Publishing
         }
         return [...values.values()];
       }),
-    async publish(target, content, sendKey) {
-      let peer;
-      try {
-        peer = await findTelegramPeer(client, Number(target.id));
-      } catch (error) {
-        return publicationFailure(error, 'failed');
-      }
-      try {
-        const message = await sendMedia(
+    publish: (target, content, sendKey) =>
+      sendTo(target, (peer) =>
+        sendMedia(
           client,
           peer,
           {
@@ -128,23 +152,14 @@ export function createTelegramPublishing(client: BaseTelegramClient): Publishing
             hideResultsUntilClose: content.settings.hideResults,
           },
           { randomId: Long.fromString(sendKey, true, 16) },
-        );
-        // A missing permalink must not turn a confirmed publication into a failure.
-        try {
-          return message.link;
-        } catch {
-          return null;
-        }
-      } catch (error) {
-        const failure = readTelegramFailure(error);
-        const definitive =
-          failure.kind === 'rpc' &&
-          failure.status !== undefined &&
-          failure.status >= 400 &&
-          failure.status < 500 &&
-          failure.rpcCode !== 'RANDOM_ID_DUPLICATE';
-        return publicationFailure(error, definitive ? 'failed' : 'unknown');
-      }
-    },
+        ),
+      ),
+    publishMessage: (target, text, sendKey) =>
+      sendTo(target, (peer) =>
+        sendText(client, peer, text, {
+          randomId: Long.fromString(sendKey, true, 16),
+          disableWebPreview: true,
+        }),
+      ),
   };
 }

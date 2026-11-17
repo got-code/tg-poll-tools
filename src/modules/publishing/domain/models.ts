@@ -34,15 +34,26 @@ export type Delivery =
   | { state: 'sent'; url: string | null }
   | { state: 'failed' | 'unknown'; message: string };
 
-export interface DraftItem extends PollContent {
-  source: string;
+export interface DeliveryItem {
   sendKey: string;
   delivery: Delivery;
 }
+
+export interface DraftItem extends PollContent, DeliveryItem {
+  source: string;
+}
+
+export interface DraftMessage extends DeliveryItem {
+  text: string;
+}
+
+export type MessagePosition = 'before' | 'after';
 
 export interface PollDraft {
   sources: string[];
   accountId: string | null;
   destination: Destination | null;
   items: DraftItem[];
+  beforeMessage: DraftMessage | null;
+  afterMessage: DraftMessage | null;
 }
