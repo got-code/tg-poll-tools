@@ -243,6 +243,10 @@ async function signInWithCode(page) {
   await page.locator('#loginSubmit').click();
   await page.locator('#login').waitFor({ state: 'hidden' });
 }
+async function openPublishingPreview(page) {
+  await page.locator('#copyPreview').click();
+  await page.locator('#publishPreview').waitFor({ state: 'visible' });
+}
 async function openQr(page, remember = false) {
   await page.locator('#connect').click();
   await page.locator('#apiId').fill('12345');
@@ -1276,7 +1280,7 @@ async function checkPublishing() {
     await page.evaluate(() => {
       window.copyFailure = 'failed';
     });
-    await page.locator('#copyPreview').click();
+    await openPublishingPreview(page);
     assert.equal(await page.locator('#publishPreview').isVisible(), true);
     assert.match(await page.locator('#publishSummary').innerText(), /Other chat/);
     assert.equal(await page.locator('#publishSummary b').count(), 0);
@@ -1304,7 +1308,7 @@ async function checkPublishing() {
     await page.evaluate(() => {
       window.copyFailure = null;
     });
-    await page.locator('#copyPreview').click();
+    await openPublishingPreview(page);
     assert.equal(
       await page.locator('#publishConfirm').innerText(),
       'Publish 2 polls and 1 message',
@@ -1368,7 +1372,7 @@ async function checkPublishing() {
     );
     assert.equal(await page.evaluate(() => window.sentMessages?.length ?? 0), 0);
     await login();
-    await page.locator('#copyPreview').click();
+    await openPublishingPreview(page);
     assert.equal(await page.locator('#publishConfirm').innerText(), 'Publish 1 message');
     assert.equal(await page.locator('#publishSummary li').count(), 0);
     assert.deepEqual(await page.locator('#publishSummary > h3').allTextContents(), [
@@ -1549,8 +1553,7 @@ async function checkEditedQuestionsCombine() {
     await page
       .getByRole('textbox', { name: 'Copy 2 question', exact: true })
       .fill('Copy question 1 #2');
-    await page.locator('#copyPreview').click();
-    await page.locator('#publishPreview').waitFor({ state: 'visible' });
+    await openPublishingPreview(page);
     assert.equal(await page.locator('#publishConfirm').innerText(), 'Publish 1 poll');
     assert.deepEqual(await page.locator('#publishSummary > ol > li > ol > li').allTextContents(), [
       'A',
@@ -1664,7 +1667,7 @@ async function checkCombinedPublishing() {
     );
     const keys = saved.items[0].parts.map(({ sendKey }) => sendKey);
     assert.equal(new Set(keys).size, 2);
-    await page.locator('#copyPreview').click();
+    await openPublishingPreview(page);
     assert.equal(await page.locator('#publishConfirm').innerText(), 'Publish 2 polls');
     assert.match(await page.locator('#publishSummary').innerText(), /Weekly #1/);
     assert.match(await page.locator('#publishSummary').innerText(), /Weekly #2/);
@@ -1690,7 +1693,7 @@ async function checkCombinedPublishing() {
     await page.evaluate(() => {
       window.copyFailure = 'unknown';
     });
-    await page.locator('#copyPreview').click();
+    await openPublishingPreview(page);
     await page.locator('#publishConfirm').click();
     await page.waitForFunction(() =>
       document.getElementById('copyStatus').textContent.includes('Synthetic publication failure'),
@@ -1717,7 +1720,7 @@ async function checkCombinedPublishing() {
       () => document.getElementById('copyStatus').textContent === 'Sending check recorded.',
     );
     await signInWithCode(page);
-    await page.locator('#copyPreview').click();
+    await openPublishingPreview(page);
     assert.equal(await page.locator('#publishConfirm').innerText(), 'Publish 1 poll');
     assert.deepEqual(
       await page.locator('#publishSummary > ol > li > ol > li').allTextContents(),
