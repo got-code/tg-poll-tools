@@ -39,8 +39,12 @@ export interface DeliveryItem {
   delivery: Delivery;
 }
 
-export interface DraftItem extends PollContent, DeliveryItem {
-  source: string;
+export interface PollPart extends PollContent, DeliveryItem {}
+
+export interface DraftItem extends PollContent {
+  sourceIndices: number[];
+  loadedSources: string[];
+  parts: PollPart[];
 }
 
 export interface DraftMessage extends DeliveryItem {
@@ -50,6 +54,7 @@ export interface DraftMessage extends DeliveryItem {
 export type MessagePosition = 'before' | 'after';
 
 export interface PollDraft {
+  started: boolean;
   sources: string[];
   accountId: string | null;
   destination: Destination | null;

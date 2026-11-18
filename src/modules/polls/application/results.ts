@@ -1,4 +1,4 @@
-import { groupPolls, filterGroups, validatePolls } from '../domain/polls.ts';
+import { groupPolls, filterGroups, validatePolls, mergePolls } from '../domain/polls.ts';
 import { linkIdentity, readPollLinks } from './links.ts';
 import type { ParticipantNames, Poll, PollData } from '../domain/models.ts';
 import type { ViewSettings } from './preferences.ts';
@@ -16,13 +16,16 @@ export interface PollResult {
 }
 
 export function resolveViewSettings(polls: readonly Poll[], settings: ViewSettings): ViewSettings {
-  const hasPoll = (id: string | null) => polls.some((poll) => poll.id === id);
+  const resolveId = (id: string | null) =>
+    polls.find((poll) => poll.id === id || (id !== null && poll.sourceIds?.includes(id)))?.id;
   return {
     ...settings,
-    groupBy: hasPoll(settings.groupBy) ? settings.groupBy : (polls[0]?.id ?? null),
+    groupBy: resolveId(settings.groupBy) ?? polls[0]?.id ?? null,
     filterBy:
-      typeof settings.filterBy === 'object' && !hasPoll(settings.filterBy.pollId)
-        ? 'grouping'
+      typeof settings.filterBy === 'object'
+        ? resolveId(settings.filterBy.pollId)
+          ? { pollId: resolveId(settings.filterBy.pollId)! }
+          : 'grouping'
         : settings.filterBy,
   };
 }
@@ -54,7 +57,7 @@ export function createPollResults({ source, demo }: { source: PollSource; demo: 
     if (kind === 'live' && data.polls.length !== links.length)
       throw new UserFacingError('Some polls are missing. Load the polls again.');
     return {
-      polls: data.polls,
+      polls: mergePolls(data.polls),
       names: data.names,
       kind,
       sourceLinks: links.map(linkIdentity),

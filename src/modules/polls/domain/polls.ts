@@ -1,4 +1,5 @@
 import { DomainError } from '../../../domain/errors.ts';
+import { pollQuestion } from '../../../domain/poll-content.ts';
 import type { Poll, PollGroup } from './models.ts';
 
 export function isParticipantMinimum(value: number) {
@@ -10,6 +11,36 @@ export function validatePolls(polls: readonly Poll[]) {
     throw new DomainError('At least one poll with answer options is required.');
   if (polls.some((poll) => !poll.id) || new Set(polls.map((poll) => poll.id)).size !== polls.length)
     throw new DomainError('Each poll must have a distinct identity.');
+}
+
+export function mergePolls(polls: readonly Poll[]): Poll[] {
+  validatePolls(polls);
+  const groups = new Map<string, Poll>();
+  const merged: Poll[] = [];
+  for (const poll of polls) {
+    const title = poll.title === undefined ? undefined : pollQuestion(poll.title);
+    let target = title ? groups.get(title) : undefined;
+    if (!target) {
+      target = { id: poll.id, title, sourceIds: [], options: [], votedAt: {} };
+      merged.push(target);
+      if (title) groups.set(title, target);
+    }
+    target.sourceIds!.push(...(poll.sourceIds ?? [poll.id]));
+    for (const option of poll.options) {
+      const text = option.text.trim();
+      const existing = target.options.find((answer) => answer.text === text);
+      if (existing) existing.voters = [...new Set([...existing.voters, ...option.voters])];
+      else target.options.push({ text, voters: [...new Set(option.voters)] });
+    }
+    for (const [id, time] of Object.entries(poll.votedAt ?? {})) {
+      const previous = target.votedAt![id];
+      target.votedAt![id] =
+        typeof time === 'number'
+          ? Math.max(typeof previous === 'number' ? previous : time, time)
+          : (previous ?? null);
+    }
+  }
+  return merged;
 }
 
 export function groupPolls(polls: readonly Poll[], groupBy: string): PollGroup[] {

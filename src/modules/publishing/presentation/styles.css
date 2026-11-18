@@ -86,9 +86,12 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
 }
-.copy-receipt {
+.copy-receipt,
+.copy-delivery {
   display: grid;
   gap: 0.5rem;
+}
+.copy-receipt {
   margin-bottom: 1rem;
 }
 .copy-receipt:empty {

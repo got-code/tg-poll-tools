@@ -26,7 +26,7 @@ export function createDraftStore(): DraftStore {
         throw new UserFacingError('The draft changed in another tab. Reload before continuing.');
       const revision = crypto.randomUUID();
       try {
-        const raw = JSON.stringify({ version: 1, revision, draft });
+        const raw = JSON.stringify({ version: 2, revision, draft });
         localStorage.setItem(DRAFT_KEY, raw);
         if (localStorage.getItem(DRAFT_KEY) !== raw) throw new Error('Write did not persist');
       } catch {
