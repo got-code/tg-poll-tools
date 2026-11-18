@@ -17,6 +17,15 @@ require you to vote first and does not expose channel voter lists.
 In analysis, an unanswered poll assumes all its options. Implicit matches are assumptions,
 not explicit votes. Results include anyone who answered at least one poll.
 
+Selected polls with the same question are treated as one, ignoring a trailing ` #1`,
+` #2`, etc. Matching is case-sensitive; leading and trailing whitespace is ignored.
+Answers are combined in first-seen order, merging identical answer text and voters.
+A vote in any part counts as answering the combined question. Copying uses the first
+source's editable settings and splits questions with more than 12 answers into numbered
+polls. Review the actual parts before publishing; each part has its own sending result.
+After the first sending attempt, the whole draft is fixed. Check uncertain results or
+retry remaining items; start a new draft to make edits.
+
 ## Run locally
 
 Use Node.js 24 and the pnpm version pinned in `package.json`:

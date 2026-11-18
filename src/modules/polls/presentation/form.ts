@@ -69,8 +69,9 @@ export function createPollForm({
 
   function updateSuggestions() {
     const links = resolved();
+    const titles = pollLabels(links.map((link) => ({ title: labels.get(identity(link)) })));
     rows.forEach((row, index) => {
-      const label = labels.get(identity(links[index])) || `Poll ${index + 1}`;
+      const label = titles[index];
       row.caption.textContent = label;
       row.input.setAttribute('aria-label', `${label} link`);
       row.remove.setAttribute('aria-label', `Remove ${label}`);
@@ -179,7 +180,11 @@ export function createPollForm({
     readLinks: () => readLinks(),
     setPolls(polls: readonly Poll[]) {
       const titles = pollLabels(polls);
-      labels = new Map(polls.map((poll, index) => [poll.id, titles[index]]));
+      labels = new Map(
+        polls.flatMap((poll, index) =>
+          (poll.sourceIds ?? [poll.id]).map((id) => [id, titles[index]]),
+        ),
+      );
       updateSuggestions();
     },
     setDisabled(value: boolean) {

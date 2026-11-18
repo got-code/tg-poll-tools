@@ -8,6 +8,7 @@ import {
 } from '../src/modules/polls/application/results.ts';
 import { linkIdentity, parseLink, readPollLinks } from '../src/modules/polls/application/links.ts';
 import { UserFacingError } from '../src/application/errors.ts';
+import { exportResults } from '../src/modules/polls/application/export.ts';
 import { samplePolls } from './fixtures/polls.mjs';
 
 const links = readPollLinks(['https://t.me/groupchat/123', '', '', '']);
@@ -137,7 +138,7 @@ test('load accepts one, two and more than four polls and rejects partial source 
     const requested = readPollLinks(['https://t.me/groupchat/123', ...Array(count - 1).fill('')]);
     const polls = requested.map((link) => ({
       id: linkIdentity(link),
-      title: 'Same question',
+      title: `Question ${link.messageId}`,
       options: [{ text: 'Answer', voters: ['1'] }],
     }));
     const workflow = createPollResults({
@@ -154,4 +155,88 @@ test('load accepts one, two and more than four polls and rejects partial source 
     polls.pop();
     await assert.rejects(workflow.load(requested, () => {}));
   }
+});
+
+test('numbered and unnumbered sources share answers, vote history, filters and exports', async () => {
+  const requested = readPollLinks(['https://t.me/groupchat/123', '', '', '']);
+  const ids = requested.map(linkIdentity);
+  const polls = [
+    {
+      id: ids[0],
+      title: ' Topics #1 ',
+      options: [{ text: ' A ', voters: ['1', '2', '2'] }],
+      votedAt: { 1: 10, 2: 20 },
+    },
+    {
+      id: ids[1],
+      title: 'Dates',
+      options: [{ text: 'Today', voters: ['1', '2', '3', '4'] }],
+    },
+    {
+      id: ids[2],
+      title: 'Topics #2',
+      options: [
+        { text: 'A', voters: ['2'] },
+        { text: 'B', voters: ['3'] },
+      ],
+      votedAt: { 2: 30, 3: 40 },
+    },
+    { id: ids[3], title: 'Topics', options: [{ text: 'C', voters: [] }] },
+  ];
+  const before = structuredClone(polls);
+  const workflow = createPollResults({
+    source: { load: async () => ({ polls, names: { 1: 'Alex', 2: 'Sam', 3: 'Pat', 4: 'Kim' } }) },
+    demo: samplePolls,
+  });
+  const result = await workflow.load(requested, () => {});
+  assert.equal(result.polls.length, 2);
+  assert.deepEqual(result.polls[0].sourceIds, [ids[0], ids[2], ids[3]]);
+  assert.deepEqual(result.polls[0].options, [
+    { text: 'A', voters: ['1', '2'] },
+    { text: 'B', voters: ['3'] },
+    { text: 'C', voters: [] },
+  ]);
+  assert.equal(result.polls[0].votedAt['2'], 30);
+  const view = { groupBy: ids[1], filterBy: 'none', minimumParticipants: 0 };
+  const [group] = selectResultGroups(result, view);
+  assert.deepEqual(
+    group.sections[0].options.map(({ text, explicitIds, implicitIds }) => ({
+      text,
+      explicitIds,
+      implicitIds,
+    })),
+    [
+      { text: 'A', explicitIds: ['1', '2'], implicitIds: ['4'] },
+      { text: 'B', explicitIds: ['3'], implicitIds: ['4'] },
+      { text: 'C', explicitIds: [], implicitIds: ['4'] },
+    ],
+  );
+  assert.deepEqual(
+    resolveViewSettings(result.polls, { ...view, groupBy: ids[2], filterBy: { pollId: ids[3] } }),
+    {
+      ...view,
+      groupBy: ids[0],
+      filterBy: { pollId: ids[0] },
+    },
+  );
+  const filtered = { ...view, filterBy: { pollId: ids[2] }, minimumParticipants: 2 };
+  assert.deepEqual(
+    selectResultGroups(result, filtered)[0].sections[0].options.map(({ text }) => text),
+    ['A', 'B'],
+  );
+  const exported = exportResults(result, ids, filtered);
+  assert.deepEqual(
+    exported.polls.map(({ title }) => title),
+    ['Topics', 'Dates'],
+  );
+  assert.deepEqual(
+    exported.rows
+      .slice(1)
+      .map(({ option, total, explicit, implicit }) => ({ option, total, explicit, implicit })),
+    [
+      { option: 'A', total: 3, explicit: 2, implicit: 1 },
+      { option: 'B', total: 2, explicit: 1, implicit: 1 },
+    ],
+  );
+  assert.deepEqual(polls, before);
 });

@@ -7,6 +7,7 @@ export interface PollOption {
 
 export interface Poll {
   id: string;
+  sourceIds?: string[];
   title?: string;
   options: PollOption[];
   votedAt?: Record<string, number | null>;

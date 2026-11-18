@@ -9,6 +9,7 @@ import type {
   MessagePosition,
   PollContent,
   PollSettings,
+  PollPart,
 } from '../domain/models.ts';
 
 const SETTINGS: [keyof PollSettings, string][] = [
@@ -77,7 +78,7 @@ export function createPublishingController({
   }
   function renderState() {
     const draft = state();
-    const locked = draft ? orderedPublications(draft).some((item) => !isEditable(item)) : false;
+    const locked = draft?.started ?? false;
     for (const input of sourceInputs) input.disabled = busy || locked;
     $('copyAddSource').disabled = busy || locked || !draft;
     $('copyUseAnalysis').disabled = busy || locked || !draft;
@@ -87,10 +88,8 @@ export function createPublishingController({
     $('copySave').disabled = busy;
     $('copyDestination').disabled = busy || locked || !draft?.accountId;
     $('copyChats').disabled = busy || locked || !draft?.accountId;
-    $('copyBeforeMessage').disabled =
-      busy || !draft || (draft.beforeMessage ? !isEditable(draft.beforeMessage) : locked);
-    $('copyAfterMessage').disabled =
-      busy || !draft || Boolean(draft.afterMessage && !isEditable(draft.afterMessage));
+    $('copyBeforeMessage').disabled = busy || !draft || locked;
+    $('copyAfterMessage').disabled = busy || !draft || locked;
     $('copyPreview').disabled =
       busy ||
       saving ||
@@ -100,7 +99,9 @@ export function createPublishingController({
     if (!draft) $('copySaveHint').textContent = 'Drafts are saved only in this browser.';
     if (draft && !saving)
       $('copySaveHint').textContent = publishing.isSaved()
-        ? 'Draft saved in this browser.'
+        ? draft.started
+          ? 'Draft fixed after a publishing attempt. Retry remaining items or delete it to start a new draft.'
+          : 'Draft saved in this browser.'
         : 'Changes are not saved. Retry saving before publishing.';
     $('copyLoad').textContent = busy ? 'Working…' : 'Fill drafts from sources';
   }
@@ -194,6 +195,7 @@ export function createPublishingController({
     receipt: HTMLElement,
     item: DeliveryItem | null,
     index: number | MessagePosition,
+    part = 0,
   ) {
     receipt.replaceChildren();
     if (!item) return;
@@ -227,7 +229,7 @@ export function createPublishingController({
           button.disabled = busy;
           button.addEventListener('click', () => {
             void run(async () => {
-              await publishing.resolveUnknown(index, published);
+              await publishing.resolveUnknown(index, published, part);
               status('Sending check recorded.');
             });
           });
@@ -250,12 +252,10 @@ export function createPublishingController({
     const sources = state()?.sources ?? [];
     const resolved = resolveLinkValues(sources);
     const draft = state();
-    const sourceLocked = draft
-      ? orderedPublications(draft).some((item) => !isEditable(item))
-      : false;
+    const sourceLocked = draft?.started ?? false;
     state()?.items.forEach((item, index) => {
       const card = element('details', 'copy-card');
-      card.open = expandedCopies.get(item.sendKey) ?? index === 0;
+      card.open = expandedCopies.get(item.parts[0].sendKey) ?? index === 0;
       const heading = element('summary');
       const title = element(
         'span',
@@ -265,45 +265,49 @@ export function createPublishingController({
       heading.append(title);
       card.append(heading);
       card.addEventListener('toggle', () => {
-        if (card.isConnected) expandedCopies.set(item.sendKey, card.open);
+        if (card.isConnected) expandedCopies.set(item.parts[0].sendKey, card.open);
       });
-      const sourceRow = element('div', 'copy-source');
-      const sourceLabel = element('label', '', 'Source poll link');
-      const sourceInput = element('input');
-      sourceInput.type = 'url';
-      sourceInput.value = sources[index];
-      sourceInput.placeholder = resolved[index] || 'https://t.me/group/123';
-      sourceInput.autocomplete = 'off';
-      sourceInput.spellcheck = false;
-      sourceInput.required = index === 0;
-      sourceInput.setAttribute('aria-label', `Source poll ${index + 1} link`);
-      sourceInput.disabled = busy || sourceLocked;
-      sourceInputs.push(sourceInput);
-      sourceLabel.append(sourceInput);
-      const hint = element('span', 'field-hint');
-      const updateHint = () => {
-        const current = state()!;
-        const links = resolveLinkValues(current.sources);
-        hint.textContent = !item.source
-          ? 'Fill drafts from sources to load this poll.'
-          : links[index] !== item.source
-            ? 'Source changed. Fill drafts from sources to update this copy.'
-            : 'This copy was filled from this source.';
-        if (!current.sources[index].trim() && links[index])
-          hint.textContent += ` Automatic · ${links[index]}`;
-      };
-      updateHint();
-      sourceHintUpdates.push(updateHint);
-      sourceInput.addEventListener('input', () =>
-        change(() => {
-          publishing.setSource(index, sourceInput.value);
-          const links = resolveLinkValues(state()!.sources);
-          sourceInputs.forEach((input, position) => {
-            input.placeholder = links[position] || 'https://t.me/group/123';
-          });
-          sourceHintUpdates.forEach((update) => update());
-        }),
-      );
+      item.sourceIndices.forEach((sourceIndex, position) => {
+        const sourceRow = element('div', 'copy-source');
+        const sourceLabel = element('label', '', 'Source poll link');
+        const sourceInput = element('input');
+        sourceInput.type = 'url';
+        sourceInput.value = sources[sourceIndex];
+        sourceInput.placeholder = resolved[sourceIndex] || 'https://t.me/group/123';
+        sourceInput.autocomplete = 'off';
+        sourceInput.spellcheck = false;
+        sourceInput.required = sourceIndex === 0;
+        sourceInput.setAttribute('aria-label', `Source poll ${sourceIndex + 1} link`);
+        sourceInput.disabled = busy || sourceLocked;
+        sourceInputs[sourceIndex] = sourceInput;
+        sourceLabel.append(sourceInput);
+        const hint = element('span', 'field-hint');
+        const updateHint = () => {
+          const current = state()!;
+          const links = resolveLinkValues(current.sources);
+          hint.textContent = !item.loadedSources[position]
+            ? 'Fill drafts from sources to load this poll.'
+            : links[sourceIndex] !== item.loadedSources[position]
+              ? 'Source changed. Fill drafts from sources to update this copy.'
+              : 'This copy was filled from this source.';
+          if (!current.sources[sourceIndex].trim() && links[sourceIndex])
+            hint.textContent += ` Automatic · ${links[sourceIndex]}`;
+        };
+        updateHint();
+        sourceHintUpdates.push(updateHint);
+        sourceInput.addEventListener('input', () =>
+          change(() => {
+            publishing.setSource(sourceIndex, sourceInput.value);
+            const links = resolveLinkValues(state()!.sources);
+            sourceInputs.forEach((input, position) => {
+              input.placeholder = links[position] || 'https://t.me/group/123';
+            });
+            sourceHintUpdates.forEach((update) => update());
+          }),
+        );
+        sourceRow.append(sourceLabel, hint);
+        card.append(sourceRow);
+      });
       const remove = element('button', 'text', 'Remove poll');
       remove.type = 'button';
       remove.disabled = busy || sourceLocked;
@@ -314,10 +318,8 @@ export function createPublishingController({
         change(() => publishing.remove(index), true);
       });
       heading.append(remove);
-      sourceRow.append(sourceLabel, hint);
-      card.append(sourceRow);
       const panel = element('fieldset', 'copy-item');
-      panel.disabled = busy || !isEditable(item);
+      panel.disabled = busy || sourceLocked;
       panel.setAttribute('aria-label', `Copy ${index + 1}`);
       const questionLabel = element('label', '', 'Question');
       const question = element('textarea');
@@ -338,7 +340,11 @@ export function createPublishingController({
       answers.rows = Math.max(4, Math.min(item.answers.length, 10));
       answers.placeholder = 'First option\nSecond option\nThird option';
       answers.setAttribute('aria-label', `Copy ${index + 1} answer options`);
-      const answersHint = element('span', 'field-hint', 'One option per line.');
+      const answersHint = element(
+        'span',
+        'field-hint',
+        'One option per line. More than 12 options are published as numbered polls.',
+      );
       answersHint.id = `copyAnswersHint${index}`;
       answers.setAttribute('aria-describedby', answersHint.id);
       answers.addEventListener('input', () =>
@@ -364,10 +370,16 @@ export function createPublishingController({
         settings.append(label);
       }
       panel.append(settings);
-      const receipt = element('div', 'copy-receipt');
-      receipt.setAttribute('role', 'status');
-      renderReceipt(receipt, item, index);
-      card.append(panel, receipt);
+      card.append(panel);
+      item.parts.forEach((part, partIndex) => {
+        const receipt = element('div', 'copy-receipt');
+        receipt.setAttribute('role', 'status');
+        if (item.parts.length > 1) receipt.append(element('strong', '', `Part ${partIndex + 1}`));
+        const status = element('div', 'copy-delivery');
+        renderReceipt(status, part, index, partIndex);
+        receipt.append(status);
+        card.append(receipt);
+      });
       $('copyEditors').append(card);
     });
   }
@@ -399,7 +411,7 @@ export function createPublishingController({
     change(() => {
       const before = state()!.items.length;
       publishing.add();
-      expandedCopies.set(state()!.items[before].sendKey, true);
+      expandedCopies.set(state()!.items[before].parts[0].sendKey, true);
     }, true),
   );
   $('copyUseAnalysis').addEventListener('click', () =>
@@ -479,10 +491,13 @@ export function createPublishingController({
     }),
   );
   $('copyPreview').addEventListener('click', () => {
-    try {
-      publishing.validate();
+    void run(async () => {
+      await publishing.prepare();
+      render();
       const draft = state()!;
-      const items = draft.items.filter(isEditable);
+      const items = orderedPublications(draft)
+        .filter(isEditable)
+        .filter((item): item is PollPart => !('text' in item));
       $('publishSummary').replaceChildren(
         element('p', '', `Destination: ${draft.destination!.title}`),
       );
@@ -524,9 +539,7 @@ export function createPublishingController({
       ].filter(Boolean);
       $('publishConfirm').textContent = `Publish ${counts.join(' and ')}`;
       $('publishPreview').showModal();
-    } catch (error) {
-      report(error);
-    }
+    });
   });
   $('publishCancel').addEventListener('click', () => $('publishPreview').close());
   $('publishConfirm').addEventListener('click', () => {
@@ -549,7 +562,7 @@ export function createPublishingController({
           item.delivery.state !== 'sent' &&
           ('text' in item
             ? item.text.trim()
-            : item.source || item.question.trim() || item.answers.some((answer) => answer.trim())),
+            : item.question.trim() || item.answers.some((answer) => answer.trim())),
       );
       $('copySaveHint').textContent = 'Saved draft restored from this browser.';
     }
